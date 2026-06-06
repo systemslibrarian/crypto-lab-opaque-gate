@@ -31,10 +31,11 @@ This is the most practically relevant password authentication scheme for the pos
 ## Stack
 
 - **Vite** + TypeScript (strict mode)
-- **WebCrypto API** (no external crypto libraries)
-- **ECDH P-256** for Diffie-Hellman arithmetic
-- **HKDF-SHA-256** for pseudorandom functions
-- **AES-256-GCM** for credential encryption
+- **[@noble/curves](https://github.com/paulmillr/noble-curves)** for the
+  P-256 ECC and the RFC 9497 OPRF (audited, ~25 KB gzipped contribution)
+- **[@noble/hashes](https://github.com/paulmillr/noble-hashes)** for HKDF,
+  HMAC, and scrypt
+- **WebCrypto** for randomness (`crypto.getRandomValues`)
 - **Vanilla CSS** with light/dark theme toggle
 - Deployable to **GitHub Pages** (no backend)
 - Mobile-first, responsive layout
@@ -56,41 +57,69 @@ The server has a secret key **k**. The client has a password **pwd**. An OPRF co
 
 The server sees only _blinded_ values (look like random noise). The client computes the final key _rwd_.
 
-**Implementation note**: RFC 9807 uses VOPRF (RFC 9497) with hash-to-curve on a prime-order group. This demo uses HKDF-based pseudorandom functions as an educationally equivalent simplification. The protocol structure and security properties are identical.
+**Implementation**: real RFC 9497 OPRF on NIST P-256 with hash-to-curve
+(SSWU map), via `@noble/curves`. The blind, evaluate, and unblind steps
+use scalar multiplication on the curve — not HKDF stand-ins. The final
+`oprf_output` is `Hash(input || N || "Finalize")` where `N = r⁻¹·evaluated`.
 
-### Component 2: Credential Envelope
+### Component 2: Credential Envelope (RFC 9807 §4, internal mode)
 
-The client's long-term keypair is encrypted with _rwd_ (the OPRF output) using AES-256-GCM:
-
-```
-envelope = AES-256-GCM-Encrypt(
-  key=rwd,
-  plaintext={client_private_key, server_public_key}
-)
-```
-
-Only someone who knows the password AND the server's OPRF key can derive _rwd_ and decrypt the envelope.
-
-Server stores: `{username, client_public_key, envelope, oprf_key}`
-
-**Zero passwords stored.**
-
-### Component 3: 3DH Authenticated Key Exchange
-
-After the client recovers the envelope, it performs three separate Diffie-Hellman operations:
+The client's long-term private key is _not_ encrypted — it's *derived*
+from the OPRF output. The envelope is just a MAC tag that proves the
+server hasn't tampered with the credentials.
 
 ```
-DH1 = DH(client_static_private, server_static_public)     [mutual auth]
-DH2 = DH(client_ephemeral_private, server_static_public)  [forward secrecy]
-DH3 = DH(client_static_private, server_ephemeral_public)  [forward secrecy]
+oprf_output      = OPRF.Finalize(password, blind, evaluated)
+randomized_pwd   = HKDF-Extract("", oprf_output || stretch(oprf_output))
+envelope_nonce   = random(32)
 
-session_key = HKDF(DH1 || DH2 || DH3, transcript)
+seed             = HKDF-Expand(randomized_pwd, envelope_nonce || "PrivateKey", 32)
+(client_sk, pk)  = DeriveAuthKeyPair(seed)
+auth_key         = HKDF-Expand(randomized_pwd, envelope_nonce || "AuthKey", 32)
+export_key       = HKDF-Expand(randomized_pwd, envelope_nonce || "ExportKey", 32)
+masking_key      = HKDF-Expand(randomized_pwd, "MaskingKey", 32)
+
+envelope         = envelope_nonce || HMAC(auth_key, envelope_nonce || cleartext_creds)
 ```
 
-- **DH1** ensures both sides know the long-term secrets (mutual authentication).
-- **DH2 + DH3** ensure that even if long-term keys are compromised later, past sessions remain secret (forward secrecy).
+Same password → same `randomized_pwd` → same `client_sk` and same
+`envelope` MAC. Wrong password (or tampered envelope) → MAC mismatch on
+recovery. The `stretch` step (scrypt N=2^15 by default) is what makes
+each guess in an offline attack expensive.
 
-Both sides compute the same session key. They exchange MACs to verify each other's transcripts. If any message was modified, authentication fails.
+Server stores: `{credential_identifier, client_public_key, masking_key, envelope, oprf_key}`.
+**No password material on the server.**
+
+### Component 3: 3DH AKE (RFC 9807 §6, internal mode)
+
+After OPRF unblinding and envelope recovery, both sides compute three
+Diffie-Hellman shared secrets:
+
+```
+dh1 = DH(client_eph_sk, server_eph_pk)     [ephemeral × ephemeral — fresh-fresh]
+dh2 = DH(client_eph_sk, server_static_pk)  [ephemeral × static    — fresh-server]
+dh3 = DH(client_static_sk, server_eph_pk)  [static × ephemeral    — client-fresh]
+```
+
+These feed an HKDF-based key schedule that derives separate keys for
+each direction:
+
+```
+prk              = HKDF-Extract("", dh1 || dh2 || dh3)
+handshake_secret = Derive-Secret(prk, "HandshakeSecret", H(preamble))
+session_key      = Derive-Secret(prk, "SessionKey",      H(preamble))
+km2              = Expand-Label(handshake_secret, "ServerMAC", "", 32)
+km3              = Expand-Label(handshake_secret, "ClientMAC", "", 32)
+
+server_mac       = HMAC(km2, H(preamble))
+client_mac       = HMAC(km3, H(preamble || server_mac))
+```
+
+- **dh1** provides "fresh × fresh" forward secrecy.
+- **dh2 + dh3** mix in long-term keys, giving mutual authentication.
+- The preamble commits to context, identities, KE1, the credential
+  response, and the server's keyshare — any byte modified by an attacker
+  changes `H(preamble)` and breaks both MACs.
 
 ## Real-World Usage
 
@@ -149,22 +178,40 @@ The demo includes five interactive exhibits:
 
 ## What Can Go Wrong — Limitations
 
-1. **This is an Educational Demo**: It uses HKDF-based PRF instead of the full RFC 9497 VOPRF with hash-to-curve. The protocol structure is faithful; the math is simplified. (Production implementations must use exact RFC 9497 construction.)
+1. **Validated, but not audited.** Every named intermediate and output
+   matches the CFRG `vectors.json` for P256-SHA256 byte-for-byte
+   (`src/test-vectors.ts` — 17 checks across one Real and one Fake
+   vector), and the spec-derived protocol properties pass
+   (`src/verify.ts` — 10 checks). That's strong evidence each derivation
+   matches RFC 9807, but it isn't a substitute for the testing, fuzzing,
+   constant-time review, and side-channel analysis a production
+   deployment needs. Use a vetted PAKE library in real systems.
 
-2. **Offline attack surface remains with OPRF key compromise**: If an attacker gets the server's OPRF key for a user (via database breach), they can try offline password guesses. Each guess requires one OPRF evaluation (~microseconds on GPU). This is equivalent to attacking bcrypt cost-10, not immune. OPAQUE's advantage is:
-   - Pre-computation is impossible (tables from one user don't help another)
+2. **Offline attack surface with OPRF key compromise.** If an attacker
+   gets the server's OPRF key for a user (via database breach), they can
+   try offline password guesses. Each guess costs one OPRF evaluation
+   plus one `stretch()` (scrypt N=2^15 here ≈ 50 ms). OPAQUE's advantages:
+   - Pre-computation is impossible (the OPRF key varies per user)
    - No plaintext password exposure
    - Mutual authentication + forward secrecy
 
-3. **Registration requires TLS**: OPAQUE doesn't bootstrap from nothing. First registration assumes the client can trust the server (via TLS). Subsequent logins are password-only (no second factor). This is by design (RFC 9807 Section 10); real deployments may layer additional auth on top.
+3. **Registration requires TLS.** OPAQUE doesn't bootstrap trust from
+   nothing. First registration assumes the client can trust the server
+   (via TLS). Subsequent logins are password-only. By design (RFC 9807
+   §10); real deployments may layer additional factors on top.
 
-4. **No backend in this demo**: All crypto is client-side. Real deployments need a server to:
+4. **No backend in this demo.** All crypto runs client-side; both
+   "sides" are simulated in the same browser. Real deployments need a
+   server to:
    - Store registration records
-   - Perform OPRF evaluations
-   - Enforce rate limits on login attempts (to slow offline attacks)
-   - Possibly use HSM to protect OPRF keys
+   - Perform OPRF evaluations (server's OPRF key never leaves)
+   - Enforce rate limits to slow online attacks
+   - Possibly use an HSM to protect OPRF keys
 
-5. **WebCrypto ECDH limitations**: This demo cannot export raw EC point multiplication. We use HKDF chains instead. Production must use RFC 9497 (proper VOPRF).
+5. **Only the P256-SHA256 suite is validated.** The CFRG publishes
+   vectors for ristretto255-SHA512 as well; supporting them requires
+   generalizing this codebase across OPRF groups. The framework in
+   `src/test-vectors.ts` is ready for them.
 
 ## No Math.random()
 
@@ -189,10 +236,16 @@ The built output is in `dist/` — ready to deploy to GitHub Pages.
 
 ```
 src/
-  oprf.ts          — OPRF: blind, evaluate, unblind, key generation
-  envelope.ts      — AES-256-GCM credential encryption, registration flow
-  ake.ts           — 3DH AKE: KE1, KE2, KE3 message handling
-  main.ts          — UI: five exhibits, interactivity
+  oprf.ts          — RFC 9497 OPRF wrapper (@noble/curves) + demo wrappers
+  kdf.ts           — HKDF, Expand-Label, Derive-Secret, DeriveKeyPair,
+                     stretch (scrypt + identity), dh()
+  envelope.ts      — RFC 9807 §4 Store / Recover, register()
+  ake.ts           — RFC 9807 §6 KE1 / KE2 / KE3, masked credential
+                     response, full key schedule
+  verify.ts        — protocol-property tests (round-trip, tampering, FS)
+  test-vectors.ts  — RFC 9807 §C P256-SHA256 vector validation
+                     (Real + Fake-login)
+  main.ts          — UI: five interactive exhibits
   style.css        — Dark/light theme, responsive, accessible
 ```
 
@@ -216,7 +269,12 @@ src/
 
 ## Repository Description (GitHub)
 
-Browser-based OPAQUE aPAKE demo (RFC 9807, July 2025). OPRF blind/evaluate/unblind, AES-256-GCM credential envelope, 3DH mutual authentication, server breach simulation. The password never touches the server. No backends. No simulated math.
+Browser-based OPAQUE aPAKE demo (RFC 9807, July 2025). Real RFC 9497
+OPRF on P-256 via `@noble/curves`. RFC 9807-compliant envelope (HMAC
+tag + derived static key, no AES), full 3DH key schedule with separate
+MAC keys per direction. Validated byte-for-byte against the CFRG
+P256-SHA256 test vectors (Real and Fake-login). Password never touches
+the server.
 
 ## Topics
 
