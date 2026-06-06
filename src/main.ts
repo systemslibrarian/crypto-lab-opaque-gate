@@ -8,6 +8,7 @@
  * Exhibit 5: Real-World Deployments and Library Context
  */
 
+import { p256 } from '@noble/curves/nist.js';
 import { generateOprfKey, oprfClientBlind, oprfServerEvaluate, oprfClientUnblind } from './oprf';
 import { register, sealEnvelope, openEnvelope, RegistrationRecord } from './envelope';
 import {
@@ -217,13 +218,8 @@ function createExhibit3(): HTMLElement {
   const regPassword = createInput('Password', 'library2026');
   const regRegisterBtn = createButton('Register', async () => {
     // Generate server keypair
-    const serverKeyPair = await crypto.subtle.generateKey(
-      { name: 'ECDH', namedCurve: 'P-256' },
-      true,
-      ['deriveBits']
-    );
-    const serverPubRaw = await crypto.subtle.exportKey('raw', serverKeyPair.publicKey);
-    const serverPrivRaw = await crypto.subtle.exportKey('raw', serverKeyPair.privateKey);
+    const serverPrivRaw = p256.utils.randomSecretKey();
+    const serverPubRaw = p256.getPublicKey(serverPrivRaw, false);
 
     const serverOprfKey = await generateOprfKey();
 
@@ -231,7 +227,7 @@ function createExhibit3(): HTMLElement {
       regPassword.value,
       regUsername.value,
       serverOprfKey.oprfPrivate,
-      new Uint8Array(serverPubRaw)
+      serverPubRaw
     );
 
     // Display result

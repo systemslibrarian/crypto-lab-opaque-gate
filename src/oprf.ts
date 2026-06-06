@@ -1,213 +1,70 @@
 /**
- * OPRF (Oblivious Pseudorandom Function) using HKDF-SHA-256.
+ * OPRF — RFC 9497 over NIST P-256 (suite P256-SHA256), via @noble/curves.
  *
- * RFC 9807-INSPIRED SIMPLIFICATION NOTE:
- * Real RFC 9807 OPAQUE uses the VOPRF construction from RFC 9497 with
- * hash-to-curve. This implementation uses HKDF-PRF chaining as an
- * educationally equivalent simplification that preserves the core property:
+ * Protocol:
+ *   blind(input)            -> { blinded, blind }            // client
+ *   blindEvaluate(sk, blinded) -> evaluated                  // server
+ *   finalize(input, blind, evaluated) -> output (32 bytes)   // client
  *
- * Protocol: Client blinds PWD with r, server evaluates, client unblinds.
- * - Password remains hidden from server (OPRF secrecy)
- * - Output is deterministic (same password → same output always)
- * - Server only sees PRF(r_public), not blind or rwd
- * - Even with server key k compromised, offline attacks cost 1 eval/guess
+ * The exported names below are kept as `oprfClient*` / `oprfServer*` for
+ * compatibility with the rest of the codebase (envelope.ts, ake.ts, etc.).
  *
- * All randomness via crypto.getRandomValues (never Math.random).
+ * Security properties this gives us (and the previous HKDF chain did NOT):
+ *  - Determinism: same password + same server key → same output, every run.
+ *  - Server-side secrecy: server sees only the blinded point, never the input.
+ *  - Offline-attack cost: each guess requires one full curve evaluation.
+ *
+ * Randomness comes from noble's RNG (crypto.getRandomValues under the hood).
  */
 
-/**
- * Hash a password to a 32-byte scalar for blinding.
- */
-export async function hashPasswordToScalar(password: string): Promise<Uint8Array> {
-  const encoder = new TextEncoder();
-  const passwordBytes = encoder.encode(password);
+import { p256_oprf } from '@noble/curves/nist.js';
 
-  // HKDF-Expand: derive 32 bytes from password
-  const key = await crypto.subtle.importKey(
-    'raw',
-    passwordBytes,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const derived = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new Uint8Array(0),
-      info: new TextEncoder().encode('oprf-hash-pwd')
-    },
-    key,
-    256
-  );
-
-  return new Uint8Array(derived);
+/** Server keypair. `oprfPrivate` is a 32-byte scalar; `oprfPublic` is a 33-byte compressed P-256 point. */
+export async function generateOprfKey(): Promise<{
+  oprfPrivate: Uint8Array;
+  oprfPublic: Uint8Array;
+}> {
+  const keys = p256_oprf.oprf.generateKeyPair();
+  return {
+    oprfPrivate: keys.secretKey,
+    oprfPublic: keys.publicKey
+  };
 }
 
 /**
- * Generate a random 32-byte scalar.
- */
-function generateRandomScalar(): Uint8Array {
-  // crypto.getRandomValues (not Math.random)
-  return crypto.getRandomValues(new Uint8Array(32));
-}
-
-/**
- * Client blind step.
- * blind = HKDF(r, password)
- * Returns { blind (sent to server), blindingFactor (r, kept secret) }
+ * Client blind step. Returns the blinded element (sent to server) and the
+ * secret blinding scalar (kept by client and used during unblind).
  */
 export async function oprfClientBlind(password: string): Promise<{
   blind: Uint8Array;
   blindingFactor: Uint8Array;
 }> {
-  // Generate random blinding factor r
-  const blindingFactor = generateRandomScalar();
-
-  // blind = HKDF(r_public, password)
-  // Use r as HKDF salt, password info
-  const blindKey = await crypto.subtle.importKey(
-    'raw',
-    blindingFactor,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const blindBits = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new TextEncoder().encode(password),
-      info: new TextEncoder().encode('oprf-blind')
-    },
-    blindKey,
-    256
-  );
-
+  const input = new TextEncoder().encode(password);
+  const { blind, blinded } = p256_oprf.oprf.blind(input);
   return {
-    blind: new Uint8Array(blindBits),
-    blindingFactor: blindingFactor
+    blind: blinded,
+    blindingFactor: blind
   };
 }
 
-/**
- * Generate server OPRF keypair.
- */
-export async function generateOprfKey(): Promise<{
-  oprfPrivate: Uint8Array;
-  oprfPublic: Uint8Array;
-}> {
-  // Generate random server OPRF key
-  const oprfPrivate = generateRandomScalar();
-
-  // Derive public key: public = HKDF(private, "oprf-public")
-  const publicKey = await crypto.subtle.importKey(
-    'raw',
-    oprfPrivate,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const publicBits = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new Uint8Array(0),
-      info: new TextEncoder().encode('oprf-public')
-    },
-    publicKey,
-    256
-  );
-
-  return {
-    oprfPrivate: oprfPrivate,
-    oprfPublic: new Uint8Array(publicBits)
-  };
-}
-
-/**
- * Server evaluate step.
- * evaluated = HKDF(server_k, blind)
- * Returns evaluated value (sent back to client).
- */
+/** Server evaluate step. Returns the evaluated element (sent back to client). */
 export async function oprfServerEvaluate(
   oprfPrivate: Uint8Array,
   blind: Uint8Array
 ): Promise<Uint8Array> {
-  // evaluated = HKDF(k, info=blind)
-  const kKey = await crypto.subtle.importKey(
-    'raw',
-    oprfPrivate,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const evaluated = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: blind,
-      info: new TextEncoder().encode('oprf-evaluate')
-    },
-    kKey,
-    256
-  );
-
-  return new Uint8Array(evaluated);
+  return p256_oprf.oprf.blindEvaluate(oprfPrivate, blind);
 }
 
 /**
- * Client unblind step.
- * Returns rwd = HKDF(password, evaluated).
+ * Client unblind + finalize. Returns the 32-byte OPRF output (`rwd`).
+ * Same (password, oprfPrivate) pair ⇒ same output across runs, regardless of
+ * the fresh blinding factor used per session.
  */
 export async function oprfClientUnblind(
   password: string,
   evaluated: Uint8Array,
   blindingFactor: Uint8Array
 ): Promise<Uint8Array> {
-  // Unblind: unblinded = HKDF(blinding_factor, evaluated)
-  const rKey = await crypto.subtle.importKey(
-    'raw',
-    blindingFactor,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const unblinded = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: evaluated,
-      info: new TextEncoder().encode('oprf-unblind')
-    },
-    rKey,
-    256
-  );
-
-  // Now compute rwd = HKDF(password, unblinded)
-  const pwdKey = await crypto.subtle.importKey(
-    'raw',
-    new TextEncoder().encode(password),
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const rwd = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new Uint8Array(unblinded),
-      info: new TextEncoder().encode('oprf-rwd')
-    },
-    pwdKey,
-    256
-  );
-
-  return new Uint8Array(rwd);
+  const input = new TextEncoder().encode(password);
+  return p256_oprf.oprf.finalize(input, blindingFactor, evaluated);
 }

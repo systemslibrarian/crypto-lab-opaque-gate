@@ -16,5 +16,9 @@
     "type": "git",
     "url": "https://github.com/systemslibrarian/crypto-lab-opaque-gate.git"
   },
-  "homepage": "https://systemslibrarian.github.io/crypto-lab-opaque-gate/"
+  "homepage": "https://systemslibrarian.github.io/crypto-lab-opaque-gate/",
+  "dependencies": {
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0"
+  }
 }

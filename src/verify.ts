@@ -3,6 +3,7 @@
  * Runs all checks to verify OPAQUE implementation correctness
  */
 
+import { p256 } from '@noble/curves/nist.js';
 import { oprfClientBlind, oprfServerEvaluate, oprfClientUnblind, generateOprfKey } from './oprf';
 import { sealEnvelope, openEnvelope, register } from './envelope';
 import { clientLoginStep1, serverLoginStep2, clientLoginStep3, serverFinalize } from './ake';
@@ -99,7 +100,7 @@ export async function runVerificationTests(): Promise<{
     }
   } catch (e) {
     error('Password Sensitivity', (e as Error).message);
-    results.push(`✗ OPRF password sensitivity error: $(e as Error).message`);
+    results.push(`✗ OPRF password sensitivity error: ${(e as Error).message}`);
     failed++;
   }
 
@@ -134,7 +135,7 @@ export async function runVerificationTests(): Promise<{
     }
   } catch (e) {
     error('Envelope Decryption', (e as Error).message);
-    results.push(`✗ Envelope decryption error: $(e as Error).message`);
+    results.push(`✗ Envelope decryption error: ${(e as Error).message}`);
     failed++;
   }
 
@@ -168,7 +169,7 @@ export async function runVerificationTests(): Promise<{
     }
   } catch (e) {
     error('Wrong Password Rejection', (e as Error).message);
-    results.push(`✗ Wrong password rejection error: $(e as Error).message`);
+    results.push(`✗ Wrong password rejection error: ${(e as Error).message}`);
     failed++;
   }
 
@@ -176,13 +177,8 @@ export async function runVerificationTests(): Promise<{
   console.log('\n6. Full Registration and Login');
   try {
     // Setup server
-    const serverKeyPair = await crypto.subtle.generateKey(
-      { name: 'ECDH', namedCurve: 'P-256' },
-      true,
-      ['deriveBits']
-    );
-    const serverPubRaw = await crypto.subtle.exportKey('raw', serverKeyPair.publicKey);
-    const serverPrivRaw = await crypto.subtle.exportKey('raw', serverKeyPair.privateKey);
+    const serverPrivRaw = p256.utils.randomSecretKey();
+    const serverPubRaw = p256.getPublicKey(serverPrivRaw, false);
 
     const serverOprfKey = await generateOprfKey();
 
@@ -191,12 +187,12 @@ export async function runVerificationTests(): Promise<{
       'testpassword123',
       'testuser',
       serverOprfKey.oprfPrivate,
-      new Uint8Array(serverPubRaw)
+      serverPubRaw
     );
 
     // Login
     const { ke1, clientState } = await clientLoginStep1('testpassword123', 'testuser');
-    const { ke2, serverState } = await serverLoginStep2(ke1, record, new Uint8Array(serverPrivRaw), new Uint8Array(serverPubRaw));
+    const { ke2, serverState } = await serverLoginStep2(ke1, record, serverPrivRaw, serverPubRaw);
     const { ke3, sessionKey: clientKey, exportKey: clientExportKey } = await clientLoginStep3(
       ke2,
       clientState
@@ -217,7 +213,7 @@ export async function runVerificationTests(): Promise<{
     }
   } catch (e) {
     error('Registration and Login', (e as Error).message);
-    results.push(`✗ Full auth flow error: $(e as Error).message`);
+    results.push(`✗ Full auth flow error: ${(e as Error).message}`);
     failed++;
   }
 
@@ -225,13 +221,8 @@ export async function runVerificationTests(): Promise<{
   console.log('\n7. Wrong Password Login Rejection');
   try {
     // Setup server
-    const serverKeyPair = await crypto.subtle.generateKey(
-      { name: 'ECDH', namedCurve: 'P-256' },
-      true,
-      ['deriveBits']
-    );
-    const serverPubRaw = await crypto.subtle.exportKey('raw', serverKeyPair.publicKey);
-    const serverPrivRaw = await crypto.subtle.exportKey('raw', serverKeyPair.privateKey);
+    const serverPrivRaw = p256.utils.randomSecretKey();
+    const serverPubRaw = p256.getPublicKey(serverPrivRaw, false);
 
     const serverOprfKey = await generateOprfKey();
 
@@ -240,7 +231,7 @@ export async function runVerificationTests(): Promise<{
       'correctpassword',
       'testuser2',
       serverOprfKey.oprfPrivate,
-      new Uint8Array(serverPubRaw)
+      serverPubRaw
     );
 
     // Try login with wrong password
@@ -251,8 +242,8 @@ export async function runVerificationTests(): Promise<{
     const { ke2: wrongKE2, serverState: wrongServerState } = await serverLoginStep2(
       wrongKE1,
       record,
-      new Uint8Array(serverPrivRaw),
-      new Uint8Array(serverPubRaw)
+      serverPrivRaw,
+      serverPubRaw
     );
 
     let authFailedAsExpected = false;
@@ -273,7 +264,7 @@ export async function runVerificationTests(): Promise<{
     }
   } catch (e) {
     error('Wrong Password Rejection', (e as Error).message);
-    results.push(`✗ Login wrong password rejection error: $(e as Error).message`);
+    results.push(`✗ Login wrong password rejection error: ${(e as Error).message}`);
     failed++;
   }
 
