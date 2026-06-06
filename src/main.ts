@@ -29,10 +29,14 @@ function bytesToHex(bytes: Uint8Array): string {
     .substring(0, 32);
 }
 
+let exhibitIdCounter = 0;
 function createContainer(title: string): HTMLElement {
   const section = document.createElement('section');
   section.className = 'exhibit';
+  const headingId = `exhibit-${++exhibitIdCounter}-h`;
+  section.setAttribute('aria-labelledby', headingId);
   const heading = document.createElement('h2');
+  heading.id = headingId;
   heading.textContent = title;
   section.appendChild(heading);
   return section;
@@ -44,10 +48,14 @@ function createTwoColumn(): { container: HTMLElement; left: HTMLElement; right: 
 
   const left = document.createElement('div');
   left.className = 'column client-side';
+  left.setAttribute('role', 'group');
+  left.setAttribute('aria-label', 'Client side');
   left.innerHTML = '<h3>CLIENT</h3>';
 
   const right = document.createElement('div');
   right.className = 'column server-side';
+  right.setAttribute('role', 'group');
+  right.setAttribute('aria-label', 'Server side');
   right.innerHTML = '<h3>SERVER</h3>';
 
   container.appendChild(left);
@@ -58,6 +66,7 @@ function createTwoColumn(): { container: HTMLElement; left: HTMLElement; right: 
 
 function createButton(label: string, onClick: () => void | Promise<void>): HTMLElement {
   const button = document.createElement('button');
+  button.type = 'button';
   button.textContent = label;
   button.onclick = () => {
     button.disabled = true;
@@ -68,11 +77,16 @@ function createButton(label: string, onClick: () => void | Promise<void>): HTMLE
   return button;
 }
 
+let inputIdCounter = 0;
 function createInput(placeholder: string, defaultValue?: string): HTMLInputElement {
   const input = document.createElement('input');
   input.type = 'text';
-  input.placeholder = placeholder;
+  input.id = `input-${++inputIdCounter}`;
   input.setAttribute('aria-label', placeholder);
+  input.placeholder = placeholder;
+  input.autocomplete = 'off';
+  input.autocapitalize = 'none';
+  input.spellcheck = false;
   if (defaultValue) input.value = defaultValue;
   return input;
 }
@@ -83,11 +97,21 @@ function createCodeBlock(title: string, content: string): HTMLElement {
   const label = document.createElement('strong');
   label.textContent = title;
   const code = document.createElement('code');
-  code.setAttribute('role', 'code');
-  code.setAttribute('aria-label', `${title}: ${content.substring(0, 32)}...`);
+  // Native <code> already has the right semantics; no role needed.
+  code.setAttribute('aria-label', `${title}: ${content.substring(0, 32)}…`);
   code.textContent = content;
   div.appendChild(label);
   div.appendChild(code);
+  return div;
+}
+
+/** Status region — added to DOM when needed, announced to AT. */
+function createStatusRegion(className: string, isError = false): HTMLElement {
+  const div = document.createElement('div');
+  div.className = className;
+  div.setAttribute('role', isError ? 'alert' : 'status');
+  div.setAttribute('aria-live', isError ? 'assertive' : 'polite');
+  div.setAttribute('aria-atomic', 'true');
   return div;
 }
 
@@ -108,21 +132,20 @@ function createExhibit1(): HTMLElement {
   exhibit.appendChild(description);
 
   const breachSim = createButton('Simulate Database Breach', async () => {
-    const result = document.createElement('div');
-    result.className = 'breach-result';
+    const result = createStatusRegion('breach-result');
     result.innerHTML = `
       <div class="breach-option">
         <strong>Plaintext Attack:</strong><br />
-        Password exposed: hunter2 ❌
+        Password exposed: hunter2 <span aria-hidden="true">❌</span><span class="sr-only"> failed</span>
       </div>
       <div class="breach-option">
         <strong>Hashed Attack (bcrypt cost-10):</strong><br />
-        GPU crack time: ~2 hours ⚠
+        GPU crack time: ~2 hours <span aria-hidden="true">⚠</span><span class="sr-only"> warning</span>
       </div>
       <div class="breach-option">
         <strong>OPAQUE Attack:</strong><br />
-        Envelope ciphertext: 9f2a4c1b8e...<br />
-        Without password: indistinguishable from random ✓
+        Envelope ciphertext: 9f2a4c1b8e…<br />
+        Without password: indistinguishable from random <span aria-hidden="true">✓</span><span class="sr-only"> safe</span>
       </div>
     `;
     exhibit.appendChild(result);
@@ -194,17 +217,36 @@ function createExhibit2(): HTMLElement {
 function createExhibit3(): HTMLElement {
   const exhibit = createContainer('Exhibit 3: Full Registration and Login');
 
-  // Tab switcher
+  // Tab switcher (ARIA Authoring Practices tab pattern)
   const tabContainer = document.createElement('div');
   tabContainer.className = 'tabs';
+  tabContainer.setAttribute('role', 'tablist');
+  tabContainer.setAttribute('aria-label', 'Protocol step');
+
+  const regTabId = 'ex3-tab-reg';
+  const logTabId = 'ex3-tab-log';
+  const regPanelId = 'ex3-panel-reg';
+  const logPanelId = 'ex3-panel-log';
 
   const regTab = document.createElement('button');
+  regTab.type = 'button';
+  regTab.id = regTabId;
   regTab.textContent = 'REGISTRATION';
   regTab.className = 'tab active';
+  regTab.setAttribute('role', 'tab');
+  regTab.setAttribute('aria-selected', 'true');
+  regTab.setAttribute('aria-controls', regPanelId);
+  regTab.tabIndex = 0;
 
   const logTab = document.createElement('button');
+  logTab.type = 'button';
+  logTab.id = logTabId;
   logTab.textContent = 'LOGIN';
   logTab.className = 'tab';
+  logTab.setAttribute('role', 'tab');
+  logTab.setAttribute('aria-selected', 'false');
+  logTab.setAttribute('aria-controls', logPanelId);
+  logTab.tabIndex = -1;
 
   tabContainer.appendChild(regTab);
   tabContainer.appendChild(logTab);
@@ -212,7 +254,11 @@ function createExhibit3(): HTMLElement {
 
   // Registration panel
   const regPanel = document.createElement('div');
+  regPanel.id = regPanelId;
   regPanel.className = 'protocol-panel active';
+  regPanel.setAttribute('role', 'tabpanel');
+  regPanel.setAttribute('aria-labelledby', regTabId);
+  regPanel.tabIndex = 0;
 
   const regUsername = createInput('Username', 'alice');
   const regPassword = createInput('Password', 'library2026');
@@ -231,14 +277,13 @@ function createExhibit3(): HTMLElement {
     );
 
     // Display result
-    const result = document.createElement('div');
-    result.className = 'reg-result';
+    const result = createStatusRegion('reg-result');
     result.innerHTML = `
       <strong>Registration Complete</strong><br />
       Username: ${record.credentialIdentifier}<br />
       Client Public Key: ${bytesToHex(record.clientPublicKey)}<br />
-      Envelope (encrypted): ${bytesToHex(record.envelope)}<br />
-      <strong style="color: #0a0">✓ Zero passwords stored on server</strong>
+      Envelope: ${bytesToHex(record.envelope)}<br />
+      <strong class="status-success"><span aria-hidden="true">✓</span> Zero passwords stored on server</strong>
     `;
     regPanel.appendChild(result);
 
@@ -254,7 +299,12 @@ function createExhibit3(): HTMLElement {
 
   // Login panel
   const logPanel = document.createElement('div');
+  logPanel.id = logPanelId;
   logPanel.className = 'protocol-panel';
+  logPanel.setAttribute('role', 'tabpanel');
+  logPanel.setAttribute('aria-labelledby', logTabId);
+  logPanel.hidden = true;
+  logPanel.tabIndex = 0;
 
   const logUsername = createInput('Username', 'alice');
   const logPassword = createInput('Password', 'library2026');
@@ -264,7 +314,9 @@ function createExhibit3(): HTMLElement {
     const serverPub = (window as any)._demoServerPublic as Uint8Array;
 
     if (!record) {
-      alert('Please register first');
+      const msg = createStatusRegion('login-result error', true);
+      msg.textContent = 'Register first, then try logging in.';
+      logPanel.appendChild(msg);
       return;
     }
 
@@ -289,10 +341,9 @@ function createExhibit3(): HTMLElement {
         throw new Error('Session key mismatch');
       }
 
-      const result = document.createElement('div');
-      result.className = 'login-result success';
+      const result = createStatusRegion('login-result success');
       result.innerHTML = `
-        <strong style="color: #0a0">✓ LOGIN SUCCESSFUL</strong><br />
+        <strong class="status-success"><span aria-hidden="true">✓</span> LOGIN SUCCESSFUL</strong><br />
         <strong>Session Key (both sides match):</strong><br />
         ${bytesToHex(sessionKey)}<br />
         <strong>Export Key:</strong><br />
@@ -300,9 +351,8 @@ function createExhibit3(): HTMLElement {
       `;
       logPanel.appendChild(result);
     } catch (e) {
-      const result = document.createElement('div');
-      result.className = 'login-result error';
-      result.innerHTML = `<strong style="color: #f33">✗ LOGIN FAILED</strong><br />${(e as Error).message}`;
+      const result = createStatusRegion('login-result error', true);
+      result.innerHTML = `<strong class="status-error"><span aria-hidden="true">✗</span> LOGIN FAILED</strong><br />${(e as Error).message}`;
       logPanel.appendChild(result);
     }
   });
@@ -311,20 +361,55 @@ function createExhibit3(): HTMLElement {
   logPanel.appendChild(logPassword);
   logPanel.appendChild(logLoginBtn);
 
-  // Tab switching
-  regTab.onclick = () => {
-    regTab.classList.add('active');
-    logTab.classList.remove('active');
-    regPanel.classList.add('active');
-    logPanel.classList.remove('active');
+  // Tab switching (ARIA tab pattern: click + Left/Right arrow keys + Home/End)
+  const selectTab = (which: 'reg' | 'log') => {
+    const activeTab = which === 'reg' ? regTab : logTab;
+    const inactiveTab = which === 'reg' ? logTab : regTab;
+    const activePanel = which === 'reg' ? regPanel : logPanel;
+    const inactivePanel = which === 'reg' ? logPanel : regPanel;
+
+    activeTab.classList.add('active');
+    activeTab.setAttribute('aria-selected', 'true');
+    activeTab.tabIndex = 0;
+    inactiveTab.classList.remove('active');
+    inactiveTab.setAttribute('aria-selected', 'false');
+    inactiveTab.tabIndex = -1;
+
+    activePanel.classList.add('active');
+    activePanel.hidden = false;
+    inactivePanel.classList.remove('active');
+    inactivePanel.hidden = true;
+
+    activeTab.focus();
   };
 
-  logTab.onclick = () => {
-    logTab.classList.add('active');
-    regTab.classList.remove('active');
-    logPanel.classList.add('active');
-    regPanel.classList.remove('active');
+  regTab.onclick = () => selectTab('reg');
+  logTab.onclick = () => selectTab('log');
+
+  const onTabKey = (e: KeyboardEvent) => {
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        e.preventDefault();
+        selectTab(document.activeElement === regTab ? 'log' : 'reg');
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        e.preventDefault();
+        selectTab(document.activeElement === logTab ? 'reg' : 'log');
+        break;
+      case 'Home':
+        e.preventDefault();
+        selectTab('reg');
+        break;
+      case 'End':
+        e.preventDefault();
+        selectTab('log');
+        break;
+    }
   };
+  regTab.addEventListener('keydown', onTabKey);
+  logTab.addEventListener('keydown', onTabKey);
 
   exhibit.appendChild(regPanel);
   exhibit.appendChild(logPanel);
@@ -340,8 +425,7 @@ function createExhibit4(): HTMLElement {
   const exhibit = createContainer('Exhibit 4: Server Database Breach');
 
   const breachBtn = createButton('Analyze Breach', () => {
-    const analysis = document.createElement('div');
-    analysis.className = 'breach-analysis';
+    const analysis = createStatusRegion('breach-analysis');
     analysis.innerHTML = `
       <div class="attack-scenario">
         <strong>Attack 1: Decrypt envelope directly</strong><br />
@@ -435,45 +519,52 @@ function createExhibit5(): HTMLElement {
 // ============================================================
 
 function initApp() {
-  const app = document.getElementById('app');
-  if (!app) return;
+  const header = document.getElementById('app-header');
+  const main = document.getElementById('main-content');
+  const footer = document.getElementById('app-footer');
+  if (!header || !main || !footer) return;
 
-  // Theme toggle
-  const header = document.createElement('header');
-  header.className = 'app-header';
+  // Header content
   header.innerHTML = `
     <h1>OPAQUE aPAKE Demo — RFC 9807</h1>
     <p>Password never touches the server. Not during registration, not during login, not ever.</p>
   `;
 
+  // Theme toggle — state-driven label and aria-hidden icon.
   const themeToggle = document.createElement('button');
+  themeToggle.type = 'button';
   themeToggle.className = 'theme-toggle';
-  themeToggle.textContent = '🌙';
+
+  const updateThemeToggle = (current: string) => {
+    const next = current === 'dark' ? 'light' : 'dark';
+    const icon = next === 'light' ? '☀️' : '🌙';
+    themeToggle.innerHTML = `<span aria-hidden="true">${icon}</span>`;
+    themeToggle.setAttribute('aria-label', `Switch to ${next} theme`);
+  };
+
+  updateThemeToggle(document.documentElement.getAttribute('data-theme') || 'dark');
+
   themeToggle.onclick = () => {
     const current = document.documentElement.getAttribute('data-theme') || 'dark';
     const next = current === 'dark' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-theme', next);
     localStorage.setItem('cv-theme', next);
-    themeToggle.textContent = next === 'dark' ? '☀️' : '🌙';
+    updateThemeToggle(next);
   };
   header.appendChild(themeToggle);
 
-  app.appendChild(header);
-
-  // Exhibits
-  app.appendChild(createExhibit1());
-  app.appendChild(createExhibit2());
-  app.appendChild(createExhibit3());
-  app.appendChild(createExhibit4());
-  app.appendChild(createExhibit5());
+  // Exhibits go in <main>
+  main.appendChild(createExhibit1());
+  main.appendChild(createExhibit2());
+  main.appendChild(createExhibit3());
+  main.appendChild(createExhibit4());
+  main.appendChild(createExhibit5());
 
   // Footer
-  const footer = document.createElement('footer');
   footer.innerHTML = `
     <p>"Whether therefore ye eat, or drink, or whatsoever ye do, do all to the glory of God."
     — 1 Corinthians 10:31</p>
   `;
-  app.appendChild(footer);
 }
 
 document.addEventListener('DOMContentLoaded', initApp);

@@ -4,57 +4,46 @@
    ============================================================ */
 
 /* ============================================================
-   CSS Variables (Dark Theme)
+   Theme Variables
    ============================================================ */
 
+:root,
 :root[data-theme='dark'] {
   --color-bg: #0a0a14;
   --color-bg-secondary: #0a1628;
   --color-text: #e0e6ed;
-  --color-text-secondary: #a0a8b8;
+  --color-text-secondary: #b0b8c8;
   --color-accent: #00d4ff;
   --color-accent-secondary: #0099ff;
   --color-success: #00ff88;
-  --color-error: #ff3366;
+  --color-error: #ff5577;
   --color-gold: #ffd700;
   --color-amber: #ffaa00;
-  --color-border: #1a2a3a;
+  --color-border: #2a3a4a;
   --color-shadow: rgba(0, 0, 0, 0.5);
+  --color-overlay: rgba(0, 0, 0, 0.3);
+  --color-focus: #ffd700;
 }
 
 :root[data-theme='light'] {
   --color-bg: #f5f5f7;
-  --color-bg-secondary: #ececf1;
+  --color-bg-secondary: #ffffff;
   --color-text: #1d1d1d;
-  --color-text-secondary: #555555;
-  --color-accent: #0066cc;
-  --color-accent-secondary: #0052a3;
-  --color-success: #34a853;
-  --color-error: #d33b27;
-  --color-gold: #d4a400;
-  --color-amber: #d49a00;
-  --color-border: #d1d5da;
+  --color-text-secondary: #4a4a4a;
+  --color-accent: #0052a3;
+  --color-accent-secondary: #003d7a;
+  --color-success: #1e7a3a;
+  --color-error: #b1241a;
+  --color-gold: #7a5e00;
+  --color-amber: #7a5500;
+  --color-border: #b8bdc4;
   --color-shadow: rgba(0, 0, 0, 0.1);
-}
-
-/* Default to dark */
-:root {
-  --color-bg: #0a0a14;
-  --color-bg-secondary: #0a1628;
-  --color-text: #e0e6ed;
-  --color-text-secondary: #a0a8b8;
-  --color-accent: #00d4ff;
-  --color-accent-secondary: #0099ff;
-  --color-success: #00ff88;
-  --color-error: #ff3366;
-  --color-gold: #ffd700;
-  --color-amber: #ffaa00;
-  --color-border: #1a2a3a;
-  --color-shadow: rgba(0, 0, 0, 0.5);
+  --color-overlay: rgba(0, 0, 0, 0.04);
+  --color-focus: #0052a3;
 }
 
 /* ============================================================
-   Global Styles
+   Global
    ============================================================ */
 
 * {
@@ -68,8 +57,8 @@ html {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell,
-    sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu,
+    Cantarell, sans-serif;
   background-color: var(--color-bg);
   color: var(--color-text);
   line-height: 1.6;
@@ -77,7 +66,59 @@ body {
 }
 
 /* ============================================================
-   Header & Navigation
+   Accessibility utilities
+   ============================================================ */
+
+/* Visually hidden but available to AT. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* Skip-to-content link. Hidden off-screen until focused. */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: 0;
+  background: var(--color-accent);
+  color: var(--color-bg);
+  padding: 0.75rem 1.25rem;
+  z-index: 1000;
+  border-radius: 0 0 4px 0;
+  font-weight: bold;
+  text-decoration: none;
+  transition: top 0.2s ease;
+}
+
+.skip-link:focus {
+  top: 0;
+  outline: 3px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+/* No-JS fallback */
+.noscript-warning {
+  background: var(--color-error);
+  color: #fff;
+  padding: 1rem 1.5rem;
+  text-align: center;
+  font-weight: bold;
+}
+
+/* Remove the default focus ring on main when it gets focus via skip link. */
+main:focus {
+  outline: none;
+}
+
+/* ============================================================
+   Header & Theme Toggle
    ============================================================ */
 
 .app-header {
@@ -92,6 +133,7 @@ body {
   font-size: 2rem;
   margin-bottom: 0.5rem;
   color: var(--color-gold);
+  padding-right: 4rem; /* leave room for toggle */
 }
 
 .app-header p {
@@ -103,15 +145,17 @@ body {
   position: absolute;
   top: 1.5rem;
   right: 1.5rem;
-  background: none;
+  background: var(--color-bg);
   border: 2px solid var(--color-accent);
   color: var(--color-accent);
   font-size: 1.5rem;
-  padding: 0.5rem;
+  padding: 0;
   cursor: pointer;
   border-radius: 50%;
-  width: 50px;
-  height: 50px;
+  width: 44px;
+  height: 44px;
+  min-width: 44px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -125,21 +169,28 @@ body {
 }
 
 /* ============================================================
-   Exhibit Sections
+   Layout
    ============================================================ */
 
 #app {
   max-width: 1200px;
   margin: 0 auto;
+}
+
+main {
   padding-bottom: 3rem;
 }
+
+/* ============================================================
+   Exhibit Sections
+   ============================================================ */
 
 .exhibit {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
   border-radius: 8px;
   padding: 2rem 1rem;
-  margin-bottom: 2rem;
+  margin: 0 0.5rem 2rem;
   box-shadow: 0 4px 12px var(--color-shadow);
 }
 
@@ -152,13 +203,13 @@ body {
 }
 
 .exhibit p {
-  color: var(--color-text-secondary);
+  color: var(--color-text);
   margin-bottom: 1.5rem;
   line-height: 1.8;
 }
 
 /* ============================================================
-   Two-Column Layout (Client/Server)
+   Two-Column (Client/Server)
    ============================================================ */
 
 .two-column {
@@ -168,9 +219,6 @@ body {
   margin-bottom: 1.5rem;
 }
 
-/* Mobile-first: stack vertically at 320px */
-
-/* Tablet: side-by-side at 768px */
 @media (min-width: 768px) {
   .two-column {
     grid-template-columns: 1fr 1fr;
@@ -181,17 +229,11 @@ body {
   border: 2px solid var(--color-border);
   border-radius: 6px;
   padding: 1.5rem;
-  min-height: 300px;
+  min-height: 200px;
 }
 
 .client-side {
-  background: linear-gradient(135deg, rgba(10, 22, 40, 0.5), rgba(10, 10, 20, 0.8));
   border-color: var(--color-accent);
-}
-
-.server-side {
-  background: linear-gradient(135deg, rgba(10, 10, 20, 0.5), rgba(5, 5, 15, 0.8));
-  border-color: var(--color-text-secondary);
 }
 
 .column h3 {
@@ -203,37 +245,41 @@ body {
 }
 
 .server-side h3 {
-  color: var(--color-text-secondary);
+  color: var(--color-text);
 }
 
 /* ============================================================
-   Code Blocks & Display
+   Code blocks (hex strings)
    ============================================================ */
 
 .code-block {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--color-overlay);
   border-left: 4px solid var(--color-accent);
   padding: 1rem;
   border-radius: 4px;
   margin: 1rem 0;
   font-family: 'Courier New', monospace;
   font-size: 0.9rem;
+  overflow: hidden;
 }
 
 .code-block strong {
   display: block;
   color: var(--color-gold);
   margin-bottom: 0.5rem;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
 .code-block code {
+  display: block;
   color: var(--color-accent);
-  word-break: break-all;
-  role: code;
+  overflow-x: auto;
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 
 /* ============================================================
-   Input & Button Styles
+   Inputs & Buttons
    ============================================================ */
 
 input[type='text'],
@@ -241,36 +287,38 @@ input[type='password'] {
   width: 100%;
   padding: 0.75rem;
   margin: 0.5rem 0 1rem 0;
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--color-bg);
   border: 2px solid var(--color-border);
   border-radius: 4px;
   color: var(--color-text);
   font-size: 1rem;
+  min-height: 44px;
   transition: border-color 0.2s;
 }
 
 input[type='text']:focus,
 input[type='password']:focus {
-  outline: none;
   border-color: var(--color-accent);
-  background: rgba(0, 212, 255, 0.05);
 }
 
 button {
   padding: 0.75rem 1.5rem;
   background: var(--color-accent);
   color: var(--color-bg);
-  border: none;
+  border: 2px solid var(--color-accent);
   border-radius: 4px;
   font-size: 1rem;
   font-weight: bold;
   cursor: pointer;
   transition: all 0.3s ease;
   margin: 0.5rem 0.5rem 0.5rem 0;
+  min-height: 44px;
+  min-width: 44px;
 }
 
 button:hover:not(:disabled) {
   background: var(--color-accent-secondary);
+  border-color: var(--color-accent-secondary);
   transform: translateY(-2px);
   box-shadow: 0 4px 12px var(--color-shadow);
 }
@@ -280,24 +328,9 @@ button:disabled {
   cursor: not-allowed;
 }
 
-/* Tab buttons */
-
-.tab {
-  background: transparent;
-  color: var(--color-text-secondary);
-  border: 2px solid var(--color-border);
-  border-bottom: none;
-  margin-right: 0.5rem;
-  margin-bottom: 0;
-  padding: 0.75rem 1.5rem;
-  cursor: pointer;
-}
-
-.tab.active {
-  background: var(--color-accent);
-  color: var(--color-bg);
-  border-color: var(--color-accent);
-}
+/* ============================================================
+   Tabs (ARIA tab pattern)
+   ============================================================ */
 
 .tabs {
   display: flex;
@@ -306,8 +339,33 @@ button:disabled {
   border-bottom: 2px solid var(--color-border);
 }
 
+.tab {
+  background: transparent;
+  color: var(--color-text);
+  border: 2px solid var(--color-border);
+  border-bottom: none;
+  margin-right: 0.5rem;
+  margin-bottom: 0;
+  padding: 0.75rem 1.5rem;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.tab.active,
+.tab[aria-selected='true'] {
+  background: var(--color-accent);
+  color: var(--color-bg);
+  border-color: var(--color-accent);
+}
+
+.tab:hover:not(.active):not(:disabled) {
+  background: var(--color-overlay);
+  transform: none;
+  box-shadow: none;
+}
+
 /* ============================================================
-   Protocol Panels
+   Protocol Panels (tabpanels)
    ============================================================ */
 
 .protocol-panel {
@@ -331,14 +389,14 @@ button:disabled {
 }
 
 /* ============================================================
-   Result Displays
+   Result displays
    ============================================================ */
 
 .breach-result,
 .reg-result,
 .login-result,
 .breach-analysis {
-  background: rgba(0, 0, 0, 0.3);
+  background: var(--color-overlay);
   border: 2px solid var(--color-accent);
   border-radius: 4px;
   padding: 1.5rem;
@@ -353,9 +411,17 @@ button:disabled {
   border-color: var(--color-error);
 }
 
+.status-success {
+  color: var(--color-success);
+}
+
+.status-error {
+  color: var(--color-error);
+}
+
 .breach-option,
 .attack-scenario {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--color-overlay);
   padding: 1rem;
   border-radius: 4px;
   margin: 0.75rem 0;
@@ -370,7 +436,7 @@ button:disabled {
 }
 
 /* ============================================================
-   Deployments & Context
+   Deployments & Library Context
    ============================================================ */
 
 .deployments {
@@ -387,7 +453,7 @@ button:disabled {
 }
 
 .deployment {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--color-overlay);
   border: 1px solid var(--color-border);
   border-left: 4px solid var(--color-success);
   padding: 1rem;
@@ -401,7 +467,7 @@ button:disabled {
 }
 
 .library-context {
-  background: rgba(0, 0, 0, 0.2);
+  background: var(--color-overlay);
   border: 2px solid var(--color-amber);
   border-radius: 4px;
   padding: 1.5rem;
@@ -414,17 +480,17 @@ button:disabled {
 }
 
 /* ============================================================
-   Explanation Box
+   Explanation box
    ============================================================ */
 
 .explanation {
-  background: rgba(0, 212, 255, 0.1);
+  background: var(--color-overlay);
   border-left: 4px solid var(--color-accent);
   padding: 1rem;
   border-radius: 4px;
   margin-top: 1.5rem;
   font-size: 0.95rem;
-  color: var(--color-text-secondary);
+  color: var(--color-text);
 }
 
 /* ============================================================
@@ -446,55 +512,85 @@ footer p {
 }
 
 /* ============================================================
-   WCAG 2.1 AA - Accessibility
+   Focus indicators (WCAG 2.4.7)
    ============================================================ */
 
-button:focus,
-input:focus,
-a:focus {
-  outline: 3px solid var(--color-accent);
+button:focus-visible,
+input:focus-visible,
+a:focus-visible,
+[role='tab']:focus-visible,
+[role='tabpanel']:focus-visible {
+  outline: 3px solid var(--color-focus);
   outline-offset: 2px;
 }
 
-[role='alert'] {
-  background: var(--color-error);
-  padding: 1rem;
-  border-radius: 4px;
-  margin-bottom: 1rem;
-}
+/* ============================================================
+   Reduced motion (WCAG 2.3.3)
+   ============================================================ */
 
-[role='code'] {
-  font-family: 'Courier New', monospace;
-  background: rgba(0, 0, 0, 0.2);
-  padding: 0.2rem 0.4rem;
-  border-radius: 2px;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .theme-toggle:hover {
+    transform: none;
+  }
+
+  button:hover:not(:disabled) {
+    transform: none;
+  }
 }
 
 /* ============================================================
-   Mobile-First Responsive Design
+   Responsive: small screens
    ============================================================ */
 
-/* Extra small devices: 320px */
 @media (max-width: 480px) {
   body {
-    font-size: 14px;
+    font-size: 15px;
+  }
+
+  .app-header {
+    padding: 1.5rem 1rem 1rem;
   }
 
   .app-header h1 {
-    font-size: 1.5rem;
+    font-size: 1.4rem;
+    padding-right: 0;
   }
 
   .app-header p {
-    display: none;
+    font-size: 0.85rem;
+  }
+
+  /* Theme toggle moves into header flow rather than overlapping. */
+  .theme-toggle {
+    position: static;
+    margin-top: 1rem;
   }
 
   .exhibit {
     padding: 1rem;
-    margin-bottom: 1.5rem;
+    margin: 0 0.25rem 1.5rem;
+  }
+
+  .exhibit h2 {
+    font-size: 1.25rem;
   }
 
   button {
     width: 100%;
+  }
+
+  .theme-toggle {
+    width: 44px;
+    height: 44px;
   }
 
   .tabs {
@@ -503,22 +599,18 @@ a:focus {
 
   .tab {
     flex: 1;
-    min-width: 150px;
+    min-width: 140px;
+    margin-right: 0;
   }
 }
 
-/* Small devices: 480px - 768px */
+/* Medium devices */
 @media (min-width: 480px) and (max-width: 768px) {
   .exhibit {
     padding: 1.5rem;
   }
-
-  .column {
-    min-height: 250px;
-  }
 }
 
-/* Medium devices: 768px - 1024px */
 @media (min-width: 768px) {
   .exhibit {
     padding: 2rem;
@@ -529,7 +621,6 @@ a:focus {
   }
 }
 
-/* Large devices: 1024px+ */
 @media (min-width: 1024px) {
   .app-header h1 {
     font-size: 2.5rem;
@@ -545,7 +636,7 @@ a:focus {
 }
 
 /* ============================================================
-   Print Styles
+   Print styles
    ============================================================ */
 
 @media print {
@@ -559,7 +650,8 @@ a:focus {
   }
 
   button,
-  .theme-toggle {
+  .theme-toggle,
+  .skip-link {
     display: none;
   }
 
