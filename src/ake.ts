@@ -1,345 +1,454 @@
 /**
- * OPAQUE 3DH Authenticated Key Exchange (AKE).
+ * OPAQUE-3DH AKE (RFC 9807 §6, internal mode, P256-SHA256).
  *
- * Three Diffie-Hellman operations on NIST P-256, via @noble/curves:
- * - DH1: static-static     (mutual knowledge of long-term keys)
- * - DH2: ephemeral-static  (forward secrecy)
- * - DH3: static-ephemeral  (forward secrecy)
+ * Three messages — KE1 (client→server), KE2 (server→client), KE3 (client→server).
  *
- * Messages: Client KE1 → Server KE2 → Client KE3 → Server Finalize.
+ *   ┌─ Client ─────────────────────┐                  ┌─ Server ──────────┐
+ *   │ blind, oprf_blinded =        │   KE1            │                   │
+ *   │   OPRF.Blind(password)       │   ─────────────▶ │                   │
+ *   │ ephemeral keypair, nonce     │                  │                   │
+ *   │                              │                  │ OPRF.BlindEvaluate│
+ *   │                              │                  │ mask envelope     │
+ *   │                              │                  │ ephemeral keypair │
+ *   │                              │   KE2            │ 3DH, key sched    │
+ *   │                              │ ◀───────────────  │ server_mac        │
+ *   │ unmask, finalize OPRF        │                  │                   │
+ *   │ stretch + Recover envelope   │                  │                   │
+ *   │ 3DH (mirrors server)         │                  │                   │
+ *   │ verify server_mac            │                  │                   │
+ *   │ client_mac                   │   KE3            │ verify client_mac │
+ *   │                              │   ─────────────▶ │ session_key       │
+ *   └──────────────────────────────┘                  └───────────────────┘
  *
- * Note: this AKE is intentionally simplified for the demo; it does not
- * split MAC keys per direction the way RFC 9807 mandates. See PHASE_SUMMARY.md.
+ * Key schedule (RFC 9807 §6.4.4):
+ *
+ *   ikm = dh1 || dh2 || dh3
+ *       where:
+ *         dh1 = DH(client_eph_sk, server_eph_pk)    // ephemeral × ephemeral
+ *         dh2 = DH(client_eph_sk, server_static_pk) // ephemeral × static
+ *         dh3 = DH(client_static_sk, server_eph_pk) // static × ephemeral
+ *   prk              = HKDF-Extract("", ikm)
+ *   handshake_secret = Derive-Secret(prk, "HandshakeSecret", H(preamble))
+ *   session_key      = Derive-Secret(prk, "SessionKey",     H(preamble))
+ *   km2              = Expand-Label(handshake_secret, "ServerMAC", "", Nh)
+ *   km3              = Expand-Label(handshake_secret, "ClientMAC", "", Nh)
+ *   server_mac       = MAC(km2, H(preamble))
+ *   client_mac       = MAC(km3, H(preamble || server_mac))
  */
 
-import { p256 } from '@noble/curves/nist.js';
-import { openEnvelope } from './envelope';
 import {
-  oprfClientBlind,
-  oprfServerEvaluate,
-  oprfClientUnblind
+  Nh,
+  Nn,
+  Nm,
+  Npk,
+  Noe,
+  concat,
+  i2osp,
+  hash,
+  mac,
+  ctEqual,
+  xor,
+  extract,
+  expand,
+  expandLabel,
+  deriveSecret,
+  stretch,
+  dh,
+  generateKeyPair
+} from './kdf';
+import {
+  oprfBlind,
+  oprfBlindEvaluate,
+  oprfFinalize
 } from './oprf';
+import {
+  ENVELOPE_LENGTH,
+  MASKED_RESPONSE_LENGTH,
+  RegistrationRecord,
+  recover
+} from './envelope';
+
+/** Application context, mixed into the preamble for domain separation. */
+const DEFAULT_CONTEXT = new TextEncoder().encode('opaque-gate-demo');
 
 export interface AKEMessage1 {
-  clientIdentity: string;
-  blindedPassword: Uint8Array;
-  clientEphemeralPublic: Uint8Array; // 65-byte uncompressed P-256 point
+  blindedMessage: Uint8Array; // Noe = 33
+  clientNonce: Uint8Array; // Nn = 32
+  clientKeyshare: Uint8Array; // Npk = 33
+}
+
+export interface CredentialResponse {
+  evaluatedMessage: Uint8Array; // Noe = 33
+  maskingNonce: Uint8Array; // Nn = 32
+  maskedResponse: Uint8Array; // Npk + ENVELOPE_LENGTH = 97
 }
 
 export interface AKEMessage2 {
-  oprfEvaluated: Uint8Array;
-  envelope: Uint8Array;
-  serverEphemeralPublic: Uint8Array; // 65-byte uncompressed P-256 point
-  serverStaticPublic: Uint8Array; // 65-byte uncompressed P-256 point
-  serverMAC: Uint8Array;
+  credentialResponse: CredentialResponse;
+  serverNonce: Uint8Array; // Nn = 32
+  serverKeyshare: Uint8Array; // Npk = 33
+  serverMac: Uint8Array; // Nm = 32
 }
 
 export interface AKEMessage3 {
-  clientMAC: Uint8Array;
+  clientMac: Uint8Array; // Nm = 32
 }
 
-/**
- * ECDH over P-256 returning the 32-byte x-coordinate as the shared secret.
- * Matches what WebCrypto's `deriveBits` would have produced.
- */
-function ecdhX(privateKey: Uint8Array, publicKey: Uint8Array): Uint8Array {
-  const shared = p256.getSharedSecret(privateKey, publicKey, false);
-  return shared.slice(1, 33);
-}
-
-/** session_key = HKDF(DH1 || DH2 || DH3, salt=transcript, info="opaque-3dh-key") */
-async function compute3DHKey(
-  dh1: Uint8Array,
-  dh2: Uint8Array,
-  dh3: Uint8Array,
-  transcript: Uint8Array
-): Promise<Uint8Array> {
-  const combined = new Uint8Array(96);
-  combined.set(dh1, 0);
-  combined.set(dh2, 32);
-  combined.set(dh3, 64);
-
-  const key = await crypto.subtle.importKey(
-    'raw',
-    combined,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const sessionKeyBits = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: transcript,
-      info: new TextEncoder().encode('opaque-3dh-key')
-    },
-    key,
-    256
-  );
-
-  return new Uint8Array(sessionKeyBits);
-}
-
-async function computeMAC(
-  key: Uint8Array,
-  transcript: Uint8Array
-): Promise<Uint8Array> {
-  const macKey = await crypto.subtle.importKey(
-    'raw',
-    key,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign']
-  );
-  const mac = await crypto.subtle.sign('HMAC', macKey, transcript);
-  return new Uint8Array(mac).slice(0, 32);
-}
-
-/**
- * Build the 3DH transcript. Both client and server must produce identical bytes,
- * so this helper is the single source of truth for layout.
- *
- * Layout: clientIdentity || blindedPassword || clientEphemeralPublic ||
- *         evaluated || envelope || serverEphemeralPublic || serverStaticPublic
- */
-function buildTranscript(parts: {
-  clientIdentity: string;
-  blindedPassword: Uint8Array;
+export interface ClientState {
+  password: string;
+  blind: Uint8Array;
+  clientNonce: Uint8Array;
+  clientEphemeralPrivate: Uint8Array;
   clientEphemeralPublic: Uint8Array;
-  evaluated: Uint8Array;
-  envelope: Uint8Array;
-  serverEphemeralPublic: Uint8Array;
-  serverStaticPublic: Uint8Array;
-}): Uint8Array {
-  const encoder = new TextEncoder();
-  const identityBytes = encoder.encode(parts.clientIdentity);
-
-  const total =
-    identityBytes.byteLength +
-    parts.blindedPassword.byteLength +
-    parts.clientEphemeralPublic.byteLength +
-    parts.evaluated.byteLength +
-    parts.envelope.byteLength +
-    parts.serverEphemeralPublic.byteLength +
-    parts.serverStaticPublic.byteLength;
-
-  const out = new Uint8Array(total);
-  let off = 0;
-  out.set(identityBytes, off);
-  off += identityBytes.byteLength;
-  out.set(parts.blindedPassword, off);
-  off += parts.blindedPassword.byteLength;
-  out.set(parts.clientEphemeralPublic, off);
-  off += parts.clientEphemeralPublic.byteLength;
-  out.set(parts.evaluated, off);
-  off += parts.evaluated.byteLength;
-  out.set(parts.envelope, off);
-  off += parts.envelope.byteLength;
-  out.set(parts.serverEphemeralPublic, off);
-  off += parts.serverEphemeralPublic.byteLength;
-  out.set(parts.serverStaticPublic, off);
-
-  return out;
+  ke1Bytes: Uint8Array;
+  clientIdentity: Uint8Array;
+  serverIdentity: Uint8Array;
+  context: Uint8Array;
 }
 
-/** Client step 1: blind password, generate ephemeral keypair, build KE1. */
+export interface ServerState {
+  sessionKey: Uint8Array;
+  expectedClientMac: Uint8Array;
+}
+
+// ============================================================
+// Serialization (used both as wire format and as transcript bytes)
+// ============================================================
+
+function serializeKE1(ke1: AKEMessage1): Uint8Array {
+  return concat(ke1.blindedMessage, ke1.clientNonce, ke1.clientKeyshare);
+}
+
+function serializeCredentialResponse(cr: CredentialResponse): Uint8Array {
+  return concat(cr.evaluatedMessage, cr.maskingNonce, cr.maskedResponse);
+}
+
+/**
+ * Preamble per RFC 9807 §6.3 — the bytes fed to Hash() before deriving
+ * handshake_secret / session_key, and what each MAC commits to.
+ *
+ *   preamble = context_string ||
+ *              I2OSP(len(client_identity), 2) || client_identity ||
+ *              ke1 ||
+ *              credential_response ||
+ *              I2OSP(len(server_identity), 2) || server_identity ||
+ *              server_nonce || server_keyshare
+ *
+ * Empty identities are replaced with the corresponding public keys
+ * (matches CreateCleartextCredentials, so MAC verification on both
+ * sides resolves the same identity bytes).
+ */
+function buildPreamble(args: {
+  context: Uint8Array;
+  clientIdentity: Uint8Array;
+  clientPublicKey: Uint8Array;
+  ke1Bytes: Uint8Array;
+  credentialResponseBytes: Uint8Array;
+  serverIdentity: Uint8Array;
+  serverPublicKey: Uint8Array;
+  serverNonce: Uint8Array;
+  serverKeyshare: Uint8Array;
+}): Uint8Array {
+  const cid =
+    args.clientIdentity.byteLength === 0
+      ? args.clientPublicKey
+      : args.clientIdentity;
+  const sid =
+    args.serverIdentity.byteLength === 0
+      ? args.serverPublicKey
+      : args.serverIdentity;
+
+  return concat(
+    args.context,
+    i2osp(cid.byteLength, 2),
+    cid,
+    args.ke1Bytes,
+    args.credentialResponseBytes,
+    i2osp(sid.byteLength, 2),
+    sid,
+    args.serverNonce,
+    args.serverKeyshare
+  );
+}
+
+// ============================================================
+// Credential response masking (RFC 9807 §6.2)
+// ============================================================
+
+function maskResponse(
+  maskingKey: Uint8Array,
+  maskingNonce: Uint8Array,
+  serverPublicKey: Uint8Array,
+  envelope: Uint8Array
+): Uint8Array {
+  const info = concat(
+    maskingNonce,
+    new TextEncoder().encode('CredentialResponsePad')
+  );
+  const pad = expand(maskingKey, info, MASKED_RESPONSE_LENGTH);
+  return xor(pad, concat(serverPublicKey, envelope));
+}
+
+function unmaskResponse(
+  maskingKey: Uint8Array,
+  maskingNonce: Uint8Array,
+  maskedResponse: Uint8Array
+): { serverPublicKey: Uint8Array; envelope: Uint8Array } {
+  const info = concat(
+    maskingNonce,
+    new TextEncoder().encode('CredentialResponsePad')
+  );
+  const pad = expand(maskingKey, info, MASKED_RESPONSE_LENGTH);
+  const plain = xor(pad, maskedResponse);
+  return {
+    serverPublicKey: plain.slice(0, Npk),
+    envelope: plain.slice(Npk, Npk + ENVELOPE_LENGTH)
+  };
+}
+
+// ============================================================
+// Client step 1
+// ============================================================
+
 export async function clientLoginStep1(
   password: string,
-  clientIdentity: string
-): Promise<{
-  ke1: AKEMessage1;
-  clientState: {
-    clientIdentity: string;
-    blindedPassword: Uint8Array;
-    blindingFactor: Uint8Array;
-    clientEphemeralPrivate: Uint8Array;
-    clientEphemeralPublic: Uint8Array;
-    password: string;
-  };
-}> {
-  const { blind, blindingFactor } = await oprfClientBlind(password);
+  clientIdentityStr: string,
+  options: {
+    serverIdentity?: Uint8Array;
+    context?: Uint8Array;
+  } = {}
+): Promise<{ ke1: AKEMessage1; clientState: ClientState }> {
+  const passwordBytes = new TextEncoder().encode(password);
+  const { blind, blinded } = oprfBlind(passwordBytes);
 
-  const clientEphemeralPrivate = p256.utils.randomSecretKey();
-  const clientEphemeralPublic = p256.getPublicKey(clientEphemeralPrivate, false);
+  const clientNonce = crypto.getRandomValues(new Uint8Array(Nn));
+  const { secretKey: clientEphemeralPrivate, publicKey: clientEphemeralPublic } =
+    generateKeyPair();
+
+  const ke1: AKEMessage1 = {
+    blindedMessage: blinded,
+    clientNonce,
+    clientKeyshare: clientEphemeralPublic
+  };
+
+  const clientIdentity = new TextEncoder().encode(clientIdentityStr);
+  const serverIdentity = options.serverIdentity ?? new Uint8Array(0);
+  const context = options.context ?? DEFAULT_CONTEXT;
 
   return {
-    ke1: {
-      clientIdentity,
-      blindedPassword: blind,
-      clientEphemeralPublic
-    },
+    ke1,
     clientState: {
-      clientIdentity,
-      blindedPassword: blind,
-      blindingFactor,
+      password,
+      blind,
+      clientNonce,
       clientEphemeralPrivate,
       clientEphemeralPublic,
-      password
+      ke1Bytes: serializeKE1(ke1),
+      clientIdentity,
+      serverIdentity,
+      context
     }
   };
 }
 
-/** Server step 2: evaluate OPRF, generate ephemeral, run 3DH, emit KE2. */
+// ============================================================
+// Server step 2
+// ============================================================
+
 export async function serverLoginStep2(
   ke1: AKEMessage1,
-  record: {
-    credentialIdentifier: string;
-    clientPublicKey: Uint8Array;
-    envelope: Uint8Array;
-    oprfKey: Uint8Array;
-  },
+  record: RegistrationRecord,
   serverPrivateKey: Uint8Array,
-  serverPublicKey: Uint8Array
-): Promise<{
-  ke2: AKEMessage2;
-  serverState: {
-    sessionKey: Uint8Array;
-    transcript: Uint8Array;
+  serverPublicKey: Uint8Array,
+  options: {
+    serverIdentity?: Uint8Array;
+    clientIdentity?: Uint8Array;
+    context?: Uint8Array;
+  } = {}
+): Promise<{ ke2: AKEMessage2; serverState: ServerState }> {
+  const serverIdentity = options.serverIdentity ?? new Uint8Array(0);
+  // Mirror register()'s default of using the credential_identifier as the
+  // client_identity. Callers can override for application-defined identities.
+  const clientIdentity =
+    options.clientIdentity ??
+    new TextEncoder().encode(record.credentialIdentifier);
+  const context = options.context ?? DEFAULT_CONTEXT;
+
+  // 1. OPRF evaluate.
+  const evaluatedMessage = oprfBlindEvaluate(
+    record.oprfKey,
+    ke1.blindedMessage
+  );
+
+  // 2. Mask the server's static public key + envelope under the per-user
+  //    masking_key. A wrong-password client decrypts garbage and the MAC
+  //    check in Recover catches it.
+  const maskingNonce = crypto.getRandomValues(new Uint8Array(Nn));
+  const maskedResponse = maskResponse(
+    record.maskingKey,
+    maskingNonce,
+    serverPublicKey,
+    record.envelope
+  );
+
+  const credentialResponse: CredentialResponse = {
+    evaluatedMessage,
+    maskingNonce,
+    maskedResponse
   };
-}> {
-  const evaluated = await oprfServerEvaluate(record.oprfKey, ke1.blindedPassword);
 
-  const serverEphemeralPrivate = p256.utils.randomSecretKey();
-  const serverEphemeralPublic = p256.getPublicKey(serverEphemeralPrivate, false);
+  // 3. Server ephemeral keypair + nonce.
+  const serverNonce = crypto.getRandomValues(new Uint8Array(Nn));
+  const { secretKey: serverEphemeralPrivate, publicKey: serverKeyshare } =
+    generateKeyPair();
 
-  // DH1 = DH(server_static_priv, client_static_pub)
-  const dh1 = ecdhX(serverPrivateKey, record.clientPublicKey);
-  // DH2 = DH(server_static_priv, client_ephemeral_pub)
-  const dh2 = ecdhX(serverPrivateKey, ke1.clientEphemeralPublic);
-  // DH3 = DH(server_ephemeral_priv, client_static_pub)
-  const dh3 = ecdhX(serverEphemeralPrivate, record.clientPublicKey);
+  // 4. 3DH per RFC 9807 §6.4.4.
+  const dh1 = dh(serverEphemeralPrivate, ke1.clientKeyshare);
+  const dh2 = dh(serverPrivateKey, ke1.clientKeyshare);
+  const dh3 = dh(serverEphemeralPrivate, record.clientPublicKey);
+  const ikm = concat(dh1, dh2, dh3);
 
-  const transcript = buildTranscript({
-    clientIdentity: ke1.clientIdentity,
-    blindedPassword: ke1.blindedPassword,
-    clientEphemeralPublic: ke1.clientEphemeralPublic,
-    evaluated,
-    envelope: record.envelope,
-    serverEphemeralPublic,
-    serverStaticPublic: serverPublicKey
+  // 5. Preamble and key schedule.
+  const ke1Bytes = serializeKE1(ke1);
+  const credentialResponseBytes = serializeCredentialResponse(credentialResponse);
+  const preamble = buildPreamble({
+    context,
+    clientIdentity,
+    clientPublicKey: record.clientPublicKey,
+    ke1Bytes,
+    credentialResponseBytes,
+    serverIdentity,
+    serverPublicKey,
+    serverNonce,
+    serverKeyshare
   });
+  const preambleHash = hash(preamble);
 
-  const sessionKey = await compute3DHKey(dh1, dh2, dh3, transcript);
-  const serverMAC = await computeMAC(sessionKey, transcript);
+  const prk = extract(new Uint8Array(0), ikm);
+  const handshakeSecret = deriveSecret(prk, 'HandshakeSecret', preambleHash);
+  const sessionKey = deriveSecret(prk, 'SessionKey', preambleHash);
+
+  const km2 = expandLabel(handshakeSecret, 'ServerMAC', new Uint8Array(0), Nh);
+  const km3 = expandLabel(handshakeSecret, 'ClientMAC', new Uint8Array(0), Nh);
+
+  const serverMac = mac(km2, preambleHash);
+  const expectedClientMac = mac(km3, hash(concat(preamble, serverMac)));
 
   return {
     ke2: {
-      oprfEvaluated: evaluated,
-      envelope: record.envelope,
-      serverEphemeralPublic,
-      serverStaticPublic: serverPublicKey,
-      serverMAC
+      credentialResponse,
+      serverNonce,
+      serverKeyshare,
+      serverMac
     },
     serverState: {
       sessionKey,
-      transcript
+      expectedClientMac
     }
   };
 }
 
-/** Client step 3: unblind OPRF, open envelope, run 3DH, verify server MAC. */
+// ============================================================
+// Client step 3
+// ============================================================
+
 export async function clientLoginStep3(
   ke2: AKEMessage2,
-  clientState: {
-    clientIdentity: string;
-    blindedPassword: Uint8Array;
-    blindingFactor: Uint8Array;
-    clientEphemeralPrivate: Uint8Array;
-    clientEphemeralPublic: Uint8Array;
-    password: string;
-  }
+  clientState: ClientState
 ): Promise<{
   ke3: AKEMessage3;
   sessionKey: Uint8Array;
   exportKey: Uint8Array;
 }> {
-  const rwd = await oprfClientUnblind(
-    clientState.password,
-    ke2.oprfEvaluated,
-    clientState.blindingFactor
+  const passwordBytes = new TextEncoder().encode(clientState.password);
+
+  // 1. Finalize OPRF → stretch → randomized_pwd.
+  const oprfOutput = oprfFinalize(
+    passwordBytes,
+    clientState.blind,
+    ke2.credentialResponse.evaluatedMessage
+  );
+  const randomizedPwd = stretch(oprfOutput);
+
+  // 2. Unmask credential response with the masking_key derived from rwd.
+  const maskingKey = expandLabel(
+    randomizedPwd,
+    'MaskingKey',
+    new Uint8Array(0),
+    Nh
+  );
+  const { serverPublicKey, envelope } = unmaskResponse(
+    maskingKey,
+    ke2.credentialResponse.maskingNonce,
+    ke2.credentialResponse.maskedResponse
   );
 
-  // Throws if rwd is wrong (AES-GCM auth tag mismatch).
-  const credentials = await openEnvelope(ke2.envelope, rwd);
+  // 3. Open the envelope → client static keypair + export key.
+  const {
+    clientPrivateKey,
+    clientPublicKey,
+    exportKey
+  } = recover(
+    randomizedPwd,
+    serverPublicKey,
+    envelope,
+    clientState.serverIdentity,
+    clientState.clientIdentity
+  );
 
-  // DH1 = DH(client_static_priv, server_static_pub)
-  const dh1 = ecdhX(credentials.clientPrivateKey, ke2.serverStaticPublic);
-  // DH2 = DH(client_ephemeral_priv, server_static_pub)
-  const dh2 = ecdhX(clientState.clientEphemeralPrivate, ke2.serverStaticPublic);
-  // DH3 = DH(client_static_priv, server_ephemeral_pub)
-  const dh3 = ecdhX(credentials.clientPrivateKey, ke2.serverEphemeralPublic);
+  // 4. 3DH — mirror of server's computation.
+  const dh1 = dh(clientState.clientEphemeralPrivate, ke2.serverKeyshare);
+  const dh2 = dh(clientState.clientEphemeralPrivate, serverPublicKey);
+  const dh3 = dh(clientPrivateKey, ke2.serverKeyshare);
+  const ikm = concat(dh1, dh2, dh3);
 
-  const transcript = buildTranscript({
+  // 5. Rebuild preamble — clientState carries every input.
+  const credentialResponseBytes = serializeCredentialResponse(ke2.credentialResponse);
+  const preamble = buildPreamble({
+    context: clientState.context,
     clientIdentity: clientState.clientIdentity,
-    blindedPassword: clientState.blindedPassword,
-    clientEphemeralPublic: clientState.clientEphemeralPublic,
-    evaluated: ke2.oprfEvaluated,
-    envelope: ke2.envelope,
-    serverEphemeralPublic: ke2.serverEphemeralPublic,
-    serverStaticPublic: ke2.serverStaticPublic
+    clientPublicKey,
+    ke1Bytes: clientState.ke1Bytes,
+    credentialResponseBytes,
+    serverIdentity: clientState.serverIdentity,
+    serverPublicKey,
+    serverNonce: ke2.serverNonce,
+    serverKeyshare: ke2.serverKeyshare
   });
+  const preambleHash = hash(preamble);
 
-  const sessionKey = await compute3DHKey(dh1, dh2, dh3, transcript);
+  const prk = extract(new Uint8Array(0), ikm);
+  const handshakeSecret = deriveSecret(prk, 'HandshakeSecret', preambleHash);
+  const sessionKey = deriveSecret(prk, 'SessionKey', preambleHash);
 
-  const expectedServerMAC = await computeMAC(sessionKey, transcript);
-  if (!constantTimeEqual(ke2.serverMAC, expectedServerMAC)) {
-    throw new Error('Server authentication failed: MAC mismatch');
+  const km2 = expandLabel(handshakeSecret, 'ServerMAC', new Uint8Array(0), Nh);
+  const km3 = expandLabel(handshakeSecret, 'ClientMAC', new Uint8Array(0), Nh);
+
+  // 6. Verify server's MAC, then emit ours over (preamble || server_mac).
+  const expectedServerMac = mac(km2, preambleHash);
+  if (!ctEqual(expectedServerMac, ke2.serverMac)) {
+    throw new Error('Server MAC verification failed');
   }
 
-  const clientMAC = await computeMAC(sessionKey, transcript);
-
-  const exportKeyMaterial = await crypto.subtle.importKey(
-    'raw',
-    rwd,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
-
-  const exportKeyBits = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new Uint8Array(0),
-      info: new TextEncoder().encode('opaque-exportkey')
-    },
-    exportKeyMaterial,
-    256
-  );
+  const clientMac = mac(km3, hash(concat(preamble, ke2.serverMac)));
 
   return {
-    ke3: { clientMAC },
+    ke3: { clientMac },
     sessionKey,
-    exportKey: new Uint8Array(exportKeyBits)
+    exportKey
   };
 }
 
-/** Server step 4: verify client MAC, return session key. */
+// ============================================================
+// Server step 4
+// ============================================================
+
 export async function serverFinalize(
   ke3: AKEMessage3,
-  serverState: {
-    sessionKey: Uint8Array;
-    transcript: Uint8Array;
-  }
+  serverState: ServerState
 ): Promise<Uint8Array> {
-  const expectedClientMAC = await computeMAC(
-    serverState.sessionKey,
-    serverState.transcript
-  );
-
-  if (!constantTimeEqual(ke3.clientMAC, expectedClientMAC)) {
-    throw new Error('Client authentication failed: MAC mismatch');
+  if (!ctEqual(ke3.clientMac, serverState.expectedClientMac)) {
+    throw new Error('Client MAC verification failed');
   }
-
   return serverState.sessionKey;
-}
-
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.byteLength !== b.byteLength) return false;
-  let result = 0;
-  for (let i = 0; i < a.byteLength; i++) {
-    result |= a[i] ^ b[i];
-  }
-  return result === 0;
 }

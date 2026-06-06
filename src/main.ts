@@ -10,7 +10,7 @@
 
 import { p256 } from '@noble/curves/nist.js';
 import { generateOprfKey, oprfClientBlind, oprfServerEvaluate, oprfClientUnblind } from './oprf';
-import { register, sealEnvelope, openEnvelope, RegistrationRecord } from './envelope';
+import { register, RegistrationRecord } from './envelope';
 import {
   clientLoginStep1,
   serverLoginStep2,
@@ -217,11 +217,11 @@ function createExhibit3(): HTMLElement {
   const regUsername = createInput('Username', 'alice');
   const regPassword = createInput('Password', 'library2026');
   const regRegisterBtn = createButton('Register', async () => {
-    // Generate server keypair
+    // Generate server keypair (compressed SEC1 — RFC 9807 expects 33-byte points)
     const serverPrivRaw = p256.utils.randomSecretKey();
-    const serverPubRaw = p256.getPublicKey(serverPrivRaw, false);
+    const serverPubRaw = p256.getPublicKey(serverPrivRaw, true);
 
-    const serverOprfKey = await generateOprfKey();
+    const serverOprfKey = generateOprfKey();
 
     const { record, exportKey } = await register(
       regPassword.value,
@@ -276,7 +276,7 @@ function createExhibit3(): HTMLElement {
       );
 
       // Server step 2
-      const { ke2, serverState } = await serverLoginStep2(ke1, record, serverPriv, new Uint8Array(serverPub));
+      const { ke2, serverState } = await serverLoginStep2(ke1, record, serverPriv, serverPub);
 
       // Client step 3
       const { ke3, sessionKey, exportKey } = await clientLoginStep3(ke2, clientState);

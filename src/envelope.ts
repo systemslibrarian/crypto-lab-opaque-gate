@@ -1,151 +1,245 @@
 /**
- * Credential Envelope — AES-256-GCM encryption of client credentials.
+ * Credential envelope (RFC 9807 §4, internal mode).
  *
- * The envelope contains:
- * - Client's static private key (32-byte P-256 scalar, used in 3DH)
- * - Server's static public key (65-byte uncompressed P-256 point)
+ * Unlike a naive design, OPAQUE does NOT encrypt the client's static
+ * private key. Instead:
  *
- * Encrypted with `rwd` (from OPRF output). Only someone who knows the
- * password AND the server's OPRF key can derive rwd and decrypt.
+ *   - The OPRF output is stretched into `randomized_pwd`.
+ *   - `Expand-Label(randomized_pwd, "PrivateKey", envelope_nonce, Nseed)`
+ *     produces the seed for DeriveAuthKeyPair, which gives the client's
+ *     static keypair. Same password ⇒ same seed ⇒ same keypair.
+ *   - The envelope itself is just `envelope_nonce || HMAC(auth_key,
+ *     envelope_nonce || cleartext_credentials)`. The MAC tag lets the
+ *     client detect tampering by the server.
  *
- * ECC key handling uses @noble/curves directly — WebCrypto disallows
- * raw private-key export, so we keep ECC scalars/points outside of
- * crypto.subtle and use WebCrypto only for AES-GCM/HKDF.
+ * This is what makes server-side offline attack cost = 1 OPRF + 1 stretch
+ * per guess: an attacker who breaches the server only learns the OPRF
+ * key, the masking_key, and the envelope. None of those reveal anything
+ * useful without first running the OPRF on a candidate password.
  */
 
-import { p256 } from '@noble/curves/nist.js';
-import { oprfClientBlind, oprfServerEvaluate, oprfClientUnblind } from './oprf';
+import {
+  Nh,
+  Nn,
+  Nm,
+  Nseed,
+  Npk,
+  concat,
+  i2osp,
+  expandLabel,
+  mac,
+  ctEqual,
+  stretch,
+  deriveAuthKeyPair
+} from './kdf';
+import { oprfBlind, oprfBlindEvaluate, oprfFinalize } from './oprf';
 
-export interface Credentials {
-  clientPrivateKey: Uint8Array; // 32-byte P-256 scalar
-  serverPublicKey: Uint8Array; // 65-byte P-256 uncompressed point
-}
+export const ENVELOPE_LENGTH = Nn + Nm; // 64 bytes
+export const MASKED_RESPONSE_LENGTH = Npk + ENVELOPE_LENGTH; // 97 bytes
 
 /**
- * Server-side record. Contains NO password material — only ECC public data,
- * the encrypted envelope, and the per-user OPRF secret.
+ * Server's per-user record after registration. Contains NO password material;
+ * an attacker who steals this database still has to brute-force the OPRF.
  */
 export interface RegistrationRecord {
   credentialIdentifier: string;
-  clientPublicKey: Uint8Array; // 65-byte uncompressed point
-  envelope: Uint8Array;
+  clientPublicKey: Uint8Array; // 33 bytes (compressed)
+  maskingKey: Uint8Array; // Nh bytes
+  envelope: Uint8Array; // envelope_nonce || auth_tag = 64 bytes
+  /**
+   * The per-user OPRF key. In RFC 9807 the server derives this on demand
+   * from `oprf_seed + credential_identifier`; we stash it on the record for
+   * demo simplicity (one less piece of global state to thread through).
+   */
   oprfKey: Uint8Array;
 }
 
+/** Output of `Store` — what the client keeps after registration. */
+export interface StoreResult {
+  envelope: Uint8Array;
+  clientPublicKey: Uint8Array;
+  maskingKey: Uint8Array;
+  exportKey: Uint8Array;
+}
+
 /**
- * Seal credentials with `rwd` using AES-256-GCM.
- * Layout: ciphertext(97 + 16 auth tag) || iv(12) = 125 bytes.
+ * CleartextCredentials per RFC 9807 §4.1.4.
+ *
+ *   server_public_key            (Npk bytes, compressed)
+ *   I2OSP(len(server_identity), 2) || server_identity
+ *   I2OSP(len(client_identity), 2) || client_identity
+ *
+ * If an identity is empty, the corresponding public key is substituted.
  */
-export async function sealEnvelope(
-  credentials: Credentials,
-  rwd: Uint8Array
-): Promise<Uint8Array> {
-  const credentialBytes = new Uint8Array(97);
-  credentialBytes.set(credentials.clientPrivateKey, 0);
-  credentialBytes.set(credentials.serverPublicKey, 32);
-
-  const iv = crypto.getRandomValues(new Uint8Array(12));
-
-  const key = await crypto.subtle.importKey('raw', rwd, 'AES-GCM', false, [
-    'encrypt'
-  ]);
-
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv: iv },
-    key,
-    credentialBytes
+export function createCleartextCredentials(
+  serverPublicKey: Uint8Array,
+  serverIdentity: Uint8Array,
+  clientIdentity: Uint8Array,
+  clientPublicKey: Uint8Array
+): Uint8Array {
+  const sid = serverIdentity.byteLength === 0 ? serverPublicKey : serverIdentity;
+  const cid = clientIdentity.byteLength === 0 ? clientPublicKey : clientIdentity;
+  return concat(
+    serverPublicKey,
+    i2osp(sid.byteLength, 2),
+    sid,
+    i2osp(cid.byteLength, 2),
+    cid
   );
-
-  const result = new Uint8Array(ciphertext.byteLength + 12);
-  result.set(new Uint8Array(ciphertext), 0);
-  result.set(iv, ciphertext.byteLength);
-
-  return result;
-}
-
-/** Open envelope with `rwd`. Throws on bad auth tag (wrong rwd). */
-export async function openEnvelope(
-  envelope: Uint8Array,
-  rwd: Uint8Array
-): Promise<Credentials> {
-  const ciphertext = envelope.slice(0, envelope.byteLength - 12);
-  const iv = envelope.slice(envelope.byteLength - 12);
-
-  const key = await crypto.subtle.importKey('raw', rwd, 'AES-GCM', false, [
-    'decrypt'
-  ]);
-
-  const plaintext = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: iv },
-    key,
-    ciphertext
-  );
-
-  const plaintextArray = new Uint8Array(plaintext);
-
-  return {
-    clientPrivateKey: plaintextArray.slice(0, 32),
-    serverPublicKey: plaintextArray.slice(32, 97)
-  };
 }
 
 /**
- * Full registration flow (client-side):
- *   1. Generate client static P-256 keypair.
- *   2. Run OPRF (blind → evaluate → unblind) to derive `rwd`.
- *   3. Seal credentials with `rwd`.
- *   4. Derive per-user export key from `rwd`.
+ * Store — client-side envelope construction during registration.
+ * RFC 9807 §4.3 (CreateRegistrationResponse → FinalizeRegistrationRequest).
+ */
+export function store(
+  randomizedPwd: Uint8Array,
+  serverPublicKey: Uint8Array,
+  serverIdentity: Uint8Array,
+  clientIdentity: Uint8Array
+): StoreResult {
+  const envelopeNonce = crypto.getRandomValues(new Uint8Array(Nn));
+
+  const maskingKey = expandLabel(
+    randomizedPwd,
+    'MaskingKey',
+    new Uint8Array(0),
+    Nh
+  );
+  const authKey = expandLabel(randomizedPwd, 'AuthKey', envelopeNonce, Nh);
+  const exportKey = expandLabel(
+    randomizedPwd,
+    'ExportKey',
+    envelopeNonce,
+    Nh
+  );
+  const seed = expandLabel(
+    randomizedPwd,
+    'PrivateKey',
+    envelopeNonce,
+    Nseed
+  );
+
+  const { publicKey: clientPublicKey } = deriveAuthKeyPair(seed);
+
+  const cleartextCreds = createCleartextCredentials(
+    serverPublicKey,
+    serverIdentity,
+    clientIdentity,
+    clientPublicKey
+  );
+
+  const authTag = mac(authKey, concat(envelopeNonce, cleartextCreds));
+  const envelope = concat(envelopeNonce, authTag);
+
+  return { envelope, clientPublicKey, maskingKey, exportKey };
+}
+
+/**
+ * Recover — client-side envelope opening during login.
+ * RFC 9807 §4.4. Throws `EnvelopeRecoveryError` if the MAC fails (wrong
+ * password, tampered envelope, or wrong server identity).
+ */
+export function recover(
+  randomizedPwd: Uint8Array,
+  serverPublicKey: Uint8Array,
+  envelope: Uint8Array,
+  serverIdentity: Uint8Array,
+  clientIdentity: Uint8Array
+): {
+  clientPrivateKey: Uint8Array;
+  clientPublicKey: Uint8Array;
+  exportKey: Uint8Array;
+} {
+  if (envelope.byteLength !== ENVELOPE_LENGTH) {
+    throw new Error('Recover: envelope length mismatch');
+  }
+  const envelopeNonce = envelope.slice(0, Nn);
+  const expectedTag = envelope.slice(Nn, Nn + Nm);
+
+  const authKey = expandLabel(randomizedPwd, 'AuthKey', envelopeNonce, Nh);
+  const exportKey = expandLabel(
+    randomizedPwd,
+    'ExportKey',
+    envelopeNonce,
+    Nh
+  );
+  const seed = expandLabel(
+    randomizedPwd,
+    'PrivateKey',
+    envelopeNonce,
+    Nseed
+  );
+
+  const { secretKey: clientPrivateKey, publicKey: clientPublicKey } =
+    deriveAuthKeyPair(seed);
+
+  const cleartextCreds = createCleartextCredentials(
+    serverPublicKey,
+    serverIdentity,
+    clientIdentity,
+    clientPublicKey
+  );
+
+  const actualTag = mac(authKey, concat(envelopeNonce, cleartextCreds));
+  if (!ctEqual(actualTag, expectedTag)) {
+    throw new Error('EnvelopeRecoveryError: auth tag mismatch');
+  }
+
+  return { clientPrivateKey, clientPublicKey, exportKey };
+}
+
+/**
+ * Full registration (client side, end-to-end).
+ *
+ *   1. Client blinds password → blinded.
+ *   2. Server evaluates blinded under its per-user OPRF key → evaluated.
+ *      (Demo: we pass the oprf key in directly; in deployment the server
+ *      derives it from oprf_seed + credential_identifier.)
+ *   3. Client finalizes → oprf_output.
+ *   4. Client stretches → randomized_pwd, then Stores → envelope, masking_key.
+ *   5. Record = { client_public_key, masking_key, envelope }.
  */
 export async function register(
   password: string,
   username: string,
   oprfKey: Uint8Array,
-  serverPublicKey: Uint8Array
-): Promise<{
-  record: RegistrationRecord;
-  exportKey: Uint8Array;
-}> {
-  const clientPrivateKey = p256.utils.randomSecretKey();
-  const clientPublicKey = p256.getPublicKey(clientPrivateKey, false);
+  serverPublicKey: Uint8Array,
+  options: {
+    serverIdentity?: Uint8Array;
+    clientIdentity?: Uint8Array;
+  } = {}
+): Promise<{ record: RegistrationRecord; exportKey: Uint8Array }> {
+  const passwordBytes = new TextEncoder().encode(password);
 
-  const { blind, blindingFactor } = await oprfClientBlind(password);
-  const evaluated = await oprfServerEvaluate(oprfKey, blind);
-  const rwd = await oprfClientUnblind(password, evaluated, blindingFactor);
+  const { blind, blinded } = oprfBlind(passwordBytes);
+  const evaluated = oprfBlindEvaluate(oprfKey, blinded);
+  const oprfOutput = oprfFinalize(passwordBytes, blind, evaluated);
 
-  const envelope = await sealEnvelope(
-    {
-      clientPrivateKey,
-      serverPublicKey
-    },
-    rwd
-  );
+  const randomizedPwd = stretch(oprfOutput);
 
-  const exportKeyMaterial = await crypto.subtle.importKey(
-    'raw',
-    rwd,
-    { name: 'HKDF', hash: 'SHA-256' },
-    false,
-    ['deriveBits']
-  );
+  // Default client_identity to the username string, matching what
+  // clientLoginStep1 uses by default. Pass `options.clientIdentity` to
+  // override (e.g., for a UUID-based application identity).
+  const serverIdentity = options.serverIdentity ?? new Uint8Array(0);
+  const clientIdentity =
+    options.clientIdentity ?? new TextEncoder().encode(username);
 
-  const exportKeyBits = await crypto.subtle.deriveBits(
-    {
-      name: 'HKDF',
-      hash: 'SHA-256',
-      salt: new TextEncoder().encode(username),
-      info: new TextEncoder().encode('opaque-exportkey')
-    },
-    exportKeyMaterial,
-    256
+  const { envelope, clientPublicKey, maskingKey, exportKey } = store(
+    randomizedPwd,
+    serverPublicKey,
+    serverIdentity,
+    clientIdentity
   );
 
   return {
     record: {
       credentialIdentifier: username,
       clientPublicKey,
+      maskingKey,
       envelope,
       oprfKey
     },
-    exportKey: new Uint8Array(exportKeyBits)
+    exportKey
   };
 }
