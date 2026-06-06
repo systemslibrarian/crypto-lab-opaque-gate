@@ -117,15 +117,23 @@ across all 16 named intermediate and output values.
 9. Forged `client_mac` → server rejects KE3.
 10. Two independent logins produce two independent session keys (forward secrecy).
 
-**`npx tsx src/test-vectors.ts` — RFC 9807 §C vector validation (16/16):**
+**`npx tsx src/test-vectors.ts` — RFC 9807 §C vector validation (17/17):**
 
-Byte-for-byte comparison against the CFRG `vectors.json` `P256-SHA256` /
-Identity-KSF vector for every named intermediate and output:
+Byte-for-byte comparison against every published CFRG `vectors.json`
+`P256-SHA256` vector (Identity KSF).
 
-  `oprf_key`, `registration_request`, `registration_response`,
-  `randomized_password`, `masking_key`, `auth_key`, `client_public_key`,
-  `envelope`, `export_key`, `registration_upload`, `KE1`, `KE2`, `KE3`,
-  `login export_key`, `session_key` (both client and server side).
+*Real-login vector (16 checks):* `oprf_key`, `registration_request`,
+`registration_response`, `randomized_password`, `masking_key`,
+`auth_key`, `client_public_key`, `envelope`, `export_key`,
+`registration_upload`, `KE1`, `KE2`, `KE3`, login `export_key`,
+client `session_key`, server `session_key`.
+
+*Fake-login vector (1 check):* `KE2` from the §6.1.2 fake-server path —
+when no record exists, the server fabricates one (zero envelope,
+vector-supplied `masking_key` and `client_public_key`, OPRF key derived
+from `oprf_seed`) and runs the normal `serverLoginStep2`. The on-wire
+KE2 must be byte-identical to a real login, which is how OPAQUE hides
+account existence from an attacker.
 
 ## Build Artifacts
 
@@ -189,9 +197,13 @@ src/
   testing, fuzzing, and side-channel review a production deployment needs.
   Use a vetted implementation for production. The library context
   discussion in Exhibit 5 still applies.
-- Only one of the published test vectors is checked. Adding the remaining
-  P256 and other-suite vectors would extend coverage; the framework in
-  `test-vectors.ts` is the right place to add them.
+- Only the P256-SHA256 ciphersuite is validated (it's the only one
+  noble currently exposes an RFC 9497 OPRF for, and the one the demo
+  uses end-to-end). Other suites — ristretto255-SHA512 (with the
+  Decaf and curve25519 groups) — have published vectors in the CFRG
+  `vectors.json` but require generalizing this codebase across suites
+  to validate. The framework in `test-vectors.ts` is the right place
+  to add them.
 
 ## Deployment
 

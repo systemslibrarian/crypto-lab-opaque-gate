@@ -39,7 +39,8 @@ import {
   clientLoginStep3,
   serverFinalize,
   serializeKE1,
-  serializeCredentialResponse
+  serializeCredentialResponse,
+  deserializeKE1
 } from './ake';
 
 // ============================================================
@@ -248,25 +249,108 @@ async function runVectorChecks(): Promise<CheckResult[]> {
   return results;
 }
 
-if (typeof window === 'undefined') {
-  runVectorChecks()
-    .then(results => {
-      let pass = 0;
-      let fail = 0;
-      for (const r of results) {
-        if (r.ok) {
-          console.log(`✓ ${r.name}`);
-          pass++;
-        } else {
-          console.log(`✗ ${r.name}${r.detail ?? ''}`);
-          fail++;
-        }
+// ============================================================
+// Fake-login vector (RFC 9807 §6.1.2)
+//
+// When the server has no record for credential_identifier, it fabricates
+// one indistinguishable from a real failed login:
+//   - fake client_public_key (random/seeded per implementation)
+//   - fake masking_key (random/seeded per implementation)
+//   - envelope = zeros(Nn + Nm)
+//   - oprf_key = deriveOprfKey(oprf_seed, credential_identifier)  // real
+// Then runs the normal serverLoginStep2 with this fake record. The vector
+// supplies the chosen fake values so the KE2 bytes are reproducible.
+// ============================================================
+
+const VF = {
+  context: hex('4f50415155452d504f43'),
+  client_identity: hex('616c696365'),
+  server_identity: hex('626f62'),
+  credential_identifier: hex('31323334'),
+  oprf_seed: hex('bb1cd59e16ac09bc0cb6d528541695d7eba2239b1613a3db3ade77b36280f725'),
+  KE1: hex('0396875da2b4f7749bba411513aea02dc514a48d169d8a9531bd61d3af3fa9baae42d4e61ed3f8d64cdd3b9d153343eca15b9b0d5e388232793c6376bd2d9cfd0a02147a6583983cc9973b5082db5f5070890cb373d70f7ac1b41ed2305361009784'),
+  masking_nonce: hex('9c035896a043e70f897d87180c543e7a063b83c1bb728fbd189c619e27b6e5a6'),
+  masking_key: hex('caecc6ccb4cae27cb54d8f3a1af1bac52a3d53107ce08497cdd362b1992e4e5e'),
+  client_public_key: hex('03b81708eae026a9370616c22e1e8542fe9dbebd36ce8a2661b708e9628f4a57fc'),
+  server_private_key: hex('34fbe7e830be1fe8d2187c97414e3826040cbe49b893b64229bab5e85a5888c7'),
+  server_public_key: hex('0221e034c0e202fe883dcfc96802a7624166fed4cfcab4ae30cf5f3290d01c88bf'),
+  server_nonce: hex('1e10f6eeab2a7a420bf09da9b27a4639645622c46358de9cf7ae813055ae2d12'),
+  server_keyshare_seed: hex('360b0937f47d45f6123a4d8f0d0c0814b6120d840ebb8bc5b4f6b62df07f78c2'),
+
+  KE2: hex('0201198dcd13f9792eb75dcfa815f61b049abfe2e3e9456d4bbbceec5f442efd049c035896a043e70f897d87180c543e7a063b83c1bb728fbd189c619e27b6e5a6facda65ce0a97b9085e7af07f61fd3fdd046d257cbf2183ce8766090b8041a8bf28d79dd4c9031ddc75bb6ddb4c291e639937840e3d39fc0d5a3d6e7723c09f7945df485bcf9aefe3fe82d149e84049e259bb5b33d6a2ff3b25e4bfb7eff0962821e10f6eeab2a7a420bf09da9b27a4639645622c46358de9cf7ae813055ae2d12023f82bbb24e75b8683fd13b843cd566efae996cd0016cffdcc24ee2bc937d026f80144878749a69565b433c1040aff67e94f79345de888a877422b9bbe21ec329')
+};
+
+async function runFakeVectorCheck(): Promise<CheckResult[]> {
+  const results: CheckResult[] = [];
+
+  // Derive the per-user OPRF key just like in the real flow.
+  const fakeOprfKey = deriveOprfKey(VF.oprf_seed, VF.credential_identifier);
+
+  // Build the fake record per RFC 9807 §6.1.2: zero envelope, supplied
+  // (vector-chosen) masking_key and client_public_key.
+  const fakeRecord = {
+    credentialIdentifier: new TextDecoder().decode(VF.credential_identifier),
+    clientPublicKey: VF.client_public_key,
+    maskingKey: VF.masking_key,
+    envelope: new Uint8Array(64), // all zeros
+    oprfKey: fakeOprfKey
+  };
+
+  const ke1 = deserializeKE1(VF.KE1);
+
+  const { ke2 } = await serverLoginStep2(
+    ke1,
+    fakeRecord,
+    VF.server_private_key,
+    VF.server_public_key,
+    {
+      maskingNonce: VF.masking_nonce,
+      serverNonce: VF.server_nonce,
+      serverKeyshareSeed: VF.server_keyshare_seed,
+      context: VF.context,
+      clientIdentity: VF.client_identity,
+      serverIdentity: VF.server_identity
+    }
+  );
+
+  const ke2Bytes = concat(
+    serializeCredentialResponse(ke2.credentialResponse),
+    ke2.serverNonce,
+    ke2.serverKeyshare,
+    ke2.serverMac
+  );
+  results.push(check('fake login KE2', ke2Bytes, VF.KE2));
+
+  return results;
+}
+
+async function runAll(): Promise<void> {
+  let pass = 0;
+  let fail = 0;
+
+  const print = (label: string, results: CheckResult[]) => {
+    console.log(`\n--- ${label} ---`);
+    for (const r of results) {
+      if (r.ok) {
+        console.log(`✓ ${r.name}`);
+        pass++;
+      } else {
+        console.log(`✗ ${r.name}${r.detail ?? ''}`);
+        fail++;
       }
-      console.log(`\n${pass} passed, ${fail} failed`);
-      process.exit(fail > 0 ? 1 : 0);
-    })
-    .catch(e => {
-      console.error('Test vector run threw:', e);
-      process.exit(1);
-    });
+    }
+  };
+
+  print('RFC 9807 §C P256-SHA256 Real vector', await runVectorChecks());
+  print('RFC 9807 §C P256-SHA256 Fake-login vector', await runFakeVectorCheck());
+
+  console.log(`\n${pass} passed, ${fail} failed`);
+  process.exit(fail > 0 ? 1 : 0);
+}
+
+if (typeof window === 'undefined') {
+  runAll().catch(e => {
+    console.error('Test vector run threw:', e);
+    process.exit(1);
+  });
 }

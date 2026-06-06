@@ -116,6 +116,18 @@ export function serializeCredentialResponse(cr: CredentialResponse): Uint8Array 
   return concat(cr.evaluatedMessage, cr.maskingNonce, cr.maskedResponse);
 }
 
+/** Parse 98-byte wire KE1 into the structured form serverLoginStep2 takes. */
+export function deserializeKE1(bytes: Uint8Array): AKEMessage1 {
+  if (bytes.byteLength !== Npk + Nn + Npk) {
+    throw new Error(`deserializeKE1: wrong length ${bytes.byteLength}`);
+  }
+  return {
+    blindedMessage: bytes.slice(0, Npk),
+    clientNonce: bytes.slice(Npk, Npk + Nn),
+    clientKeyshare: bytes.slice(Npk + Nn)
+  };
+}
+
 const PREAMBLE_PREFIX = new TextEncoder().encode('OPAQUEv1-');
 
 function vec2(b: Uint8Array): Uint8Array {
