@@ -16,7 +16,7 @@
  * (envelope.ts handles that).
  */
 
-import { p256_oprf } from '@noble/curves/nist.js';
+import { p256_oprf, p256_hasher } from '@noble/curves/nist.js';
 
 /** Server keypair for the OPRF. Public key is 33-byte compressed P-256. */
 export function generateOprfKey(): {
@@ -27,11 +27,35 @@ export function generateOprfKey(): {
   return { oprfPrivate: secretKey, oprfPublic: publicKey };
 }
 
-/** Client blind step. */
-export function oprfBlind(input: Uint8Array): {
-  blind: Uint8Array;
-  blinded: Uint8Array;
-} {
+const OPRF_HASH_TO_GROUP_DST = new TextEncoder().encode(
+  'HashToGroup-OPRFV1-\x00-P256-SHA256'
+);
+
+function bytesToScalar(b: Uint8Array): bigint {
+  let n = 0n;
+  for (const byte of b) n = (n << 8n) | BigInt(byte);
+  return n;
+}
+
+/**
+ * Client blind step.
+ *
+ * Pass `preChosenBlind` to skip random scalar selection and use the exact
+ * scalar bytes provided — needed because noble's blind() samples through
+ * hash_to_field (48+ bytes of entropy), and the RFC 9807 vectors specify
+ * the scalar directly. The resulting blinded point is computed manually:
+ *   M = HashToGroup(input);  blinded = M.multiply(blindScalar)
+ */
+export function oprfBlind(
+  input: Uint8Array,
+  preChosenBlind?: Uint8Array
+): { blind: Uint8Array; blinded: Uint8Array } {
+  if (preChosenBlind) {
+    const M = p256_hasher.hashToCurve(input, { DST: OPRF_HASH_TO_GROUP_DST });
+    const r = bytesToScalar(preChosenBlind);
+    const blinded = M.multiply(r).toBytes(true);
+    return { blind: preChosenBlind, blinded };
+  }
   const { blind, blinded } = p256_oprf.oprf.blind(input);
   return { blind, blinded };
 }

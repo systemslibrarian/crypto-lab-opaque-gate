@@ -1,10 +1,11 @@
 # OPAQUE Demo — Phase Completion Summary
 
-## Status: RFC 9807-compliant OPAQUE-3DH on P256-SHA256
+## Status: RFC 9807-compliant OPAQUE-3DH on P256-SHA256 — validated against §C test vector
 
 The demo implements the internal-mode OPAQUE protocol from RFC 9807 end to end,
-on top of the RFC 9497 OPRF from `@noble/curves`. No more "educational
-simplification" disclaimer — the protocol pieces match the spec.
+on top of the RFC 9497 OPRF from `@noble/curves`. Byte-for-byte agreement with
+the published `P256-SHA256` test vector (CFRG `vectors.json`, identity KSF)
+across all 16 named intermediate and output values.
 
 ### Phase 0: Repository Gate
 - vite.config.ts with base: '/crypto-lab-opaque-gate/'
@@ -24,12 +25,20 @@ simplification" disclaimer — the protocol pieces match the spec.
 - I2OSP, concat, ct-equal, XOR.
 - HKDF-Extract / HKDF-Expand (via `@noble/hashes`).
 - `Expand-Label` and `Derive-Secret` per RFC 9807 §6.4.2 — `OPAQUE-` prefix,
-  length-prefixed label and context.
-- `stretch()` = scrypt(N=2^15, r=8, p=1, dkLen=32). Defaults sized for snappy
-  exhibits; production should bump to N=2^17 (OWASP 2023) or switch to
-  Argon2id.
-- `deriveAuthKeyPair(seed)` — RFC 9807's deterministic keypair derivation
-  via RFC 9497 DeriveKeyPair semantics (counter + `hashToScalar`).
+  length-prefixed label and context. Used by the AKE side of the protocol.
+- Envelope-side derivations use **raw HKDF-Expand** with
+  `info = envelope_nonce || label` (RFC 9807 §4.3), NOT Expand-Label.
+- `deriveRandomizedPassword(oprf_output, stretch)` =
+  `HKDF-Extract("", oprf_output || stretch(oprf_output))` (RFC 9807 §4.1).
+- `stretch` ships with two implementations: `stretchScrypt` (N=2^15, r=8, p=1
+  — default for the demo) and `stretchIdentity` (used by the §C test vectors
+  and for debugging). Production should bump scrypt to N=2^17 (OWASP 2023) or
+  swap in Argon2id.
+- `deriveKeyPair(seed, info)` — RFC 9497 §3.2.1 deterministic keypair
+  derivation. Wrapped by `deriveDiffieHellmanKeyPair` (info
+  `"OPAQUE-DeriveDiffieHellmanKeyPair"`, used for client static, client
+  ephemeral, and server ephemeral) and `deriveOprfKeyPair` (info
+  `"OPAQUE-DeriveKeyPair"`, used for per-user OPRF secret).
 - `dh()` returns the 33-byte SEC1-compressed shared point (RFC 9807 §6.4).
 
 ### Phase 3: Credential Envelope (RFC 9807 §4, internal mode)
@@ -64,9 +73,18 @@ simplification" disclaimer — the protocol pieces match the spec.
   - `km3 = Expand-Label(handshake_secret, "ClientMAC", "", Nh)`
   - `server_mac = MAC(km2, H(preamble))`
   - `client_mac = MAC(km3, H(preamble || server_mac))`
-- Preamble built from `context || client_identity || ke1 ||
-  credential_response || server_identity || server_nonce || server_keyshare`
-  (RFC 9807 §6.3) — single `buildPreamble` helper is the source of truth.
+- Preamble (RFC 9807 §6.3) built by a single `buildPreamble` helper that
+  matches the CFRG reference byte-for-byte:
+  ```
+  "OPAQUEv1-" ||
+  I2OSP(len(context), 2) || context ||
+  I2OSP(len(client_id), 2) || client_id ||
+  KE1 ||
+  I2OSP(len(server_id), 2) || server_id ||
+  credential_response ||
+  server_nonce || server_keyshare
+  ```
+  Note that `server_identity` precedes `credential_response`.
 
 ### Phase 5: UI & Five Exhibits
 - File: src/main.ts
@@ -84,9 +102,9 @@ simplification" disclaimer — the protocol pieces match the spec.
 - WCAG 2.1 AA: aria-labels, role attributes, focus outlines.
 - Responsive mobile-first (320px / 768px / 1440px).
 
-### Phase 7: Verification (10/10 passing)
+### Phase 7: Verification
 
-`npx tsx src/verify.ts`:
+**`npx tsx src/verify.ts` — protocol property tests (10/10):**
 
 1. TypeScript strict-mode compile.
 2. OPRF determinism — 3 runs, identical output.
@@ -98,6 +116,16 @@ simplification" disclaimer — the protocol pieces match the spec.
 8. Forged `server_mac` → client rejects KE2.
 9. Forged `client_mac` → server rejects KE3.
 10. Two independent logins produce two independent session keys (forward secrecy).
+
+**`npx tsx src/test-vectors.ts` — RFC 9807 §C vector validation (16/16):**
+
+Byte-for-byte comparison against the CFRG `vectors.json` `P256-SHA256` /
+Identity-KSF vector for every named intermediate and output:
+
+  `oprf_key`, `registration_request`, `registration_response`,
+  `randomized_password`, `masking_key`, `auth_key`, `client_public_key`,
+  `envelope`, `export_key`, `registration_upload`, `KE1`, `KE2`, `KE3`,
+  `login export_key`, `session_key` (both client and server side).
 
 ## Build Artifacts
 
@@ -115,11 +143,12 @@ The JS bundle grew from 18 KB (broken HKDF-as-OPRF) → 62 KB (real OPRF) →
 
 ```
 src/
-  oprf.ts          RFC 9497 OPRF (noble) + step-by-step demo wrappers
-  kdf.ts           I2OSP, HKDF, Expand-Label, Derive-Secret, stretch, DeriveAuthKeyPair
-  envelope.ts      RFC 9807 §4 Store/Recover, CleartextCredentials, register()
+  oprf.ts          RFC 9497 OPRF (noble) + step-by-step demo wrappers; manual blind hook for vectors
+  kdf.ts           I2OSP, HKDF, Expand-Label, Derive-Secret, stretch variants, DeriveKeyPair wrappers
+  envelope.ts      RFC 9807 §4 Store/Recover, CleartextCredentials, register(); deriveOprfKey from oprf_seed
   ake.ts           RFC 9807 §6 KE1/KE2/KE3, masked credential response, full key schedule
-  verify.ts        End-to-end protocol property tests
+  verify.ts        End-to-end protocol property tests (round-trip, tampering, FS)
+  test-vectors.ts  RFC 9807 §C P256-SHA256 vector validation
   main.ts          Five interactive exhibits
   style.css        Dark/light theme, responsive, accessible
 ```
@@ -152,15 +181,17 @@ src/
   cleartext_credentials`).
 - All randomness from `crypto.getRandomValues()`.
 
-## What this implementation is NOT (yet)
+## What this implementation is NOT
 
-- Not validated against RFC 9807 test vectors. The protocol logic matches
-  the spec section by section, but exhaustive byte-for-byte comparison
-  against the published vectors would require seeded-RNG plumbing. Worth
-  doing as a follow-up.
 - Not a replacement for an audited PAKE library. It's teaching code that
-  matches the spec — use a vetted implementation for production
-  deployments. The library context discussion in Exhibit 5 still applies.
+  reproduces the RFC 9807 §C reference vector — that's strong evidence
+  that each derivation matches the spec, but it's still well short of the
+  testing, fuzzing, and side-channel review a production deployment needs.
+  Use a vetted implementation for production. The library context
+  discussion in Exhibit 5 still applies.
+- Only one of the published test vectors is checked. Adding the remaining
+  P256 and other-suite vectors would extend coverage; the framework in
+  `test-vectors.ts` is the right place to add them.
 
 ## Deployment
 

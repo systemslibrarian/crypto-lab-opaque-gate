@@ -123,12 +123,36 @@ export function deriveSecret(
 
 /**
  * Key-stretching function applied to the OPRF output before deriving credentials.
- * RFC 9807 §4.1 says implementers should pick a memory-hard KSF; this demo uses
- * scrypt with N=2^15 (≈ 50 ms on modern CPUs) for snappy exhibits. Production
- * deployments should use N=2^17 (OWASP 2023) or Argon2id.
+ * RFC 9807 §4.1 says implementers should pick a memory-hard KSF.
+ *
+ * The library demos run with `stretchScrypt` (memory-hard, snappy at N=2^15).
+ * The `Identity` stretch is the no-op KSF — used in RFC 9807 §C test vectors
+ * and in protocol-debugging contexts. Production deployments should bump scrypt
+ * N to 2^17 (OWASP 2023) or swap in Argon2id.
  */
-export function stretch(input: Uint8Array): Uint8Array {
-  return scrypt(input, new Uint8Array(0), { N: 1 << 15, r: 8, p: 1, dkLen: Nh });
+export type StretchFn = (input: Uint8Array) => Uint8Array;
+
+export const stretchIdentity: StretchFn = input => input;
+
+export const stretchScrypt: StretchFn = input =>
+  scrypt(input, new Uint8Array(0), { N: 1 << 15, r: 8, p: 1, dkLen: Nh });
+
+/** Default stretch (kept exported under the old name for callers). */
+export const stretch: StretchFn = stretchScrypt;
+
+/**
+ * RFC 9807 §4.1 `randomized_password` derivation. The stretch output and
+ * the raw OPRF output are *both* fed into HKDF-Extract — running stretch
+ * alone isn't enough.
+ *
+ *   randomized_password = HKDF-Extract("", oprf_output || stretch(oprf_output))
+ */
+export function deriveRandomizedPassword(
+  oprfOutput: Uint8Array,
+  stretchFn: StretchFn = stretchScrypt
+): Uint8Array {
+  const stretched = stretchFn(oprfOutput);
+  return extract(new Uint8Array(0), concat(oprfOutput, stretched));
 }
 
 /** bigint → big-endian 32-byte scalar. */
@@ -142,24 +166,25 @@ function scalarToBytes(s: bigint): Uint8Array {
 }
 
 /**
- * DeriveAuthKeyPair per RFC 9807 §6.3.2.
- *
- * Derives a P-256 keypair deterministically from a seed using RFC 9497
- * DeriveKeyPair semantics with the OPAQUE-AKE DST.
+ * RFC 9497 §3.2.1 DeriveKeyPair, parameterized by `info`.
  *
  *   deriveInput = seed || I2OSP(len(info), 2) || info
+ *   contextString = "OPRFV1-" || I2OSP(mode, 1) || "-" || suite
+ *   DST = "DeriveKeyPair" || contextString
  *   for counter in 0..255:
  *     sk = HashToScalar(deriveInput || I2OSP(counter, 1), DST)
  *     if sk != 0: break
  *   pk = sk * G   (compressed)
+ *
+ * Mode is fixed to 0x00 (base OPRF) and the OPRF suite is P256-SHA256 — both
+ * match the RFC 9807 P256-SHA256 configuration.
  */
-export function deriveAuthKeyPair(seed: Uint8Array): {
+export function deriveKeyPair(seed: Uint8Array, info: Uint8Array): {
   secretKey: Uint8Array;
   publicKey: Uint8Array;
 } {
-  const info = new TextEncoder().encode('OPAQUE-DeriveAuthKeyPair');
-  // RFC 9807 §6.4: contextString for OPAQUE on P256-SHA256.
-  const dst = new TextEncoder().encode('OPAQUE-DeriveAuthKeyPair-OPAQUEv1-\x00');
+  const contextString = new TextEncoder().encode('OPRFV1-\x00-P256-SHA256');
+  const dst = concat(new TextEncoder().encode('DeriveKeyPair'), contextString);
 
   for (let counter = 0; counter < 256; counter++) {
     const input = concat(seed, i2osp(info.byteLength, 2), info, i2osp(counter, 1));
@@ -170,7 +195,32 @@ export function deriveAuthKeyPair(seed: Uint8Array): {
       return { secretKey: skBytes, publicKey };
     }
   }
-  throw new Error('DeriveAuthKeyPair: rejection-sampled out');
+  throw new Error('DeriveKeyPair: rejection-sampled past counter 255');
+}
+
+const DH_INFO = new TextEncoder().encode('OPAQUE-DeriveDiffieHellmanKeyPair');
+const OPRF_INFO = new TextEncoder().encode('OPAQUE-DeriveKeyPair');
+
+/**
+ * DeriveKeyPair for any OPAQUE Diffie-Hellman keypair: the client's static
+ * key (in Store / Recover), the client ephemeral, and the server ephemeral.
+ */
+export function deriveDiffieHellmanKeyPair(seed: Uint8Array): {
+  secretKey: Uint8Array;
+  publicKey: Uint8Array;
+} {
+  return deriveKeyPair(seed, DH_INFO);
+}
+
+/**
+ * DeriveKeyPair for the server's per-user OPRF secret. The seed itself
+ * comes from `HKDF-Expand(oprf_seed, credential_identifier || "OprfKey", Nok)`.
+ */
+export function deriveOprfKeyPair(seed: Uint8Array): {
+  secretKey: Uint8Array;
+  publicKey: Uint8Array;
+} {
+  return deriveKeyPair(seed, OPRF_INFO);
 }
 
 /**
