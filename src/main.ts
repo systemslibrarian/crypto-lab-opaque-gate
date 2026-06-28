@@ -562,6 +562,11 @@ function initApp() {
 
   // Footer
   footer.innerHTML = `
+    <p>Related demos:
+      <a href="https://systemslibrarian.github.io/crypto-lab-webauthn/">crypto-lab-webauthn</a> ·
+      <a href="https://systemslibrarian.github.io/crypto-lab-x3dh-wire/">crypto-lab-x3dh-wire</a> ·
+      <a href="https://systemslibrarian.github.io/crypto-lab-psi-gate/">crypto-lab-psi-gate</a> ·
+      <a href="https://systemslibrarian.github.io/crypto-lab-noise-pipe/">crypto-lab-noise-pipe</a></p>
     <p>"Whether therefore ye eat, or drink, or whatsoever ye do, do all to the glory of God."
     — 1 Corinthians 10:31</p>
   `;
