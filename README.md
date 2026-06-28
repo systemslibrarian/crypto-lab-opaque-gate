@@ -1,7 +1,4 @@
-# OPAQUE aPAKE Demo — RFC 9807
-
-"Whether therefore ye eat, or drink, or whatsoever ye do, do all to the glory of God."  
-— 1 Corinthians 10:31
+# crypto-lab-opaque-gate
 
 ## What It Is
 
@@ -27,6 +24,45 @@ This is the most practically relevant password authentication scheme for the pos
 - Patron portal authentication in library systems (ILS, self-checkout, staff login)
 - Understanding why current password hashing (even modern schemes) still exposes credentials to offline attacks
 - Any system where you want to eliminate "password compromise in a breach" from the threat model
+- Do NOT deploy this in production — it is a teaching demo with both client and server simulated in one browser; use a vetted PAKE library in real systems.
+
+## Live Demo
+
+**[systemslibrarian.github.io/crypto-lab-opaque-gate](https://systemslibrarian.github.io/crypto-lab-opaque-gate/)**
+
+The demo simulates both client and server in one browser across five interactive exhibits: why plaintext and hashed password auth is broken, the blind/evaluate/unblind OPRF flow showing what the server sees versus never sees, the full KE1 → KE2 → KE3 registration and login message flow with session-key agreement and mutual authentication, a server-breach simulation that shows why offline dictionary attacks are possible but pre-computation is not, and a tour of real-world deployments.
+
+## What Can Go Wrong
+
+- **Validated, but not audited.** Every named intermediate and output matches the CFRG `vectors.json` for P256-SHA256 byte-for-byte (`src/test-vectors.ts` — 17 checks across one Real and one Fake vector), and the spec-derived protocol properties pass (`src/verify.ts` — 10 checks). That's strong evidence each derivation matches RFC 9807, but it isn't a substitute for the testing, fuzzing, constant-time review, and side-channel analysis a production deployment needs. Use a vetted PAKE library in real systems.
+- **Offline attack surface with OPRF key compromise.** If an attacker gets the server's OPRF key for a user (via database breach), they can try offline password guesses. Each guess costs one OPRF evaluation plus one `stretch()` (scrypt N=2^15 here ≈ 50 ms). OPAQUE's advantages: pre-computation is impossible (the OPRF key varies per user), no plaintext password exposure, mutual authentication + forward secrecy.
+- **Registration requires TLS.** OPAQUE doesn't bootstrap trust from nothing. First registration assumes the client can trust the server (via TLS). Subsequent logins are password-only. By design (RFC 9807 §10); real deployments may layer additional factors on top.
+- **No backend in this demo.** All crypto runs client-side; both "sides" are simulated in the same browser. Real deployments need a server to store registration records, perform OPRF evaluations (server's OPRF key never leaves), enforce rate limits to slow online attacks, and possibly use an HSM to protect OPRF keys.
+- **Only the P256-SHA256 suite is validated.** The CFRG publishes vectors for ristretto255-SHA512 as well; supporting them requires generalizing this codebase across OPRF groups. The framework in `src/test-vectors.ts` is ready for them.
+
+## Real-World Usage
+
+- **RFC 9807** was published by the IRTF Crypto Forum Research Group in July 2025. Authors: Hugo Krawczyk (AWS; also designed HMAC, HKDF, Noise, IKE), Kevin Lewi (Meta, WhatsApp E2E Encrypted Backups), Christopher Wood (Cloudflare), and Stanislaw Jarecki (UC Irvine).
+- **WhatsApp** (2021+): End-to-End Encrypted Backups for 300M+ users use an OPAQUE-based construction.
+- **Cloudflare Zero Trust**: Exploring OPAQUE for passwordless authentication.
+- **Apple Private Cloud Compute**: Uses related OPRF constructions for privacy-preserving authentication.
+- **1Password**: Research into OPAQUE for vault unlock.
+
+## How to Run Locally
+
+```bash
+git clone https://github.com/systemslibrarian/crypto-lab-opaque-gate
+cd crypto-lab-opaque-gate
+npm install
+npm run dev
+```
+
+## Related Demos
+
+- [crypto-lab-webauthn](https://systemslibrarian.github.io/crypto-lab-webauthn/) — FIDO2 passkeys, the passwordless alternative to password-based aPAKE.
+- [crypto-lab-x3dh-wire](https://systemslibrarian.github.io/crypto-lab-x3dh-wire/) — X25519 asynchronous key agreement from the Signal protocol.
+- [crypto-lab-psi-gate](https://systemslibrarian.github.io/crypto-lab-psi-gate/) — also built on an OPRF (DH-PSI) for private contact discovery.
+- [crypto-lab-noise-pipe](https://systemslibrarian.github.io/crypto-lab-noise-pipe/) — X25519 handshake patterns and key exchange.
 
 ## Stack
 
@@ -40,10 +76,6 @@ This is the most practically relevant password authentication scheme for the pos
 - Deployable to **GitHub Pages** (no backend)
 - Mobile-first, responsive layout
 - WCAG 2.1 AA compliant
-
-## Live Demo
-
-https://systemslibrarian.github.io/crypto-lab-opaque-gate/
 
 ## How OPAQUE Works
 
@@ -121,22 +153,6 @@ client_mac       = HMAC(km3, H(preamble || server_mac))
   response, and the server's keyshare — any byte modified by an attacker
   changes `H(preamble)` and breaks both MACs.
 
-## Real-World Usage
-
-**RFC 9807** was published by the IRTF Crypto Forum Research Group in July 2025. Authors:
-
-- **Hugo Krawczyk** (AWS, also designed HMAC, HKDF, Noise, IKE)
-- **Kevin Lewi** (Meta, WhatsApp E2E Encrypted Backups)
-- **Christopher Wood** (Cloudflare)
-- **Stanislaw Jarecki** (UC Irvine)
-
-**Deployments**:
-
-- **WhatsApp** (2021+): End-to-End Encrypted Backups for 300M+ users use an OPAQUE-based construction.
-- **Cloudflare Zero Trust**: Exploring OPAQUE for passwordless authentication.
-- **Apple Private Cloud Compute**: Uses related OPRF constructions for privacy-preserving authentication.
-- **1Password**: Research into OPAQUE for vault unlock.
-
 ## Library Patron Context
 
 Current library systems send patron passwords to ILS servers (or store hashes):
@@ -175,43 +191,6 @@ The demo includes five interactive exhibits:
 4. **Server Breach Simulation**: Analyze attack scenarios when the database is compromised. Show why offline dictionary attacks _are_ possible with OPRF key, but pre-computation is impossible.
 
 5. **Real-World Deployments**: WhatsApp, Cloudflare, Apple, 1Password. Library patron privacy impact.
-
-## What Can Go Wrong — Limitations
-
-1. **Validated, but not audited.** Every named intermediate and output
-   matches the CFRG `vectors.json` for P256-SHA256 byte-for-byte
-   (`src/test-vectors.ts` — 17 checks across one Real and one Fake
-   vector), and the spec-derived protocol properties pass
-   (`src/verify.ts` — 10 checks). That's strong evidence each derivation
-   matches RFC 9807, but it isn't a substitute for the testing, fuzzing,
-   constant-time review, and side-channel analysis a production
-   deployment needs. Use a vetted PAKE library in real systems.
-
-2. **Offline attack surface with OPRF key compromise.** If an attacker
-   gets the server's OPRF key for a user (via database breach), they can
-   try offline password guesses. Each guess costs one OPRF evaluation
-   plus one `stretch()` (scrypt N=2^15 here ≈ 50 ms). OPAQUE's advantages:
-   - Pre-computation is impossible (the OPRF key varies per user)
-   - No plaintext password exposure
-   - Mutual authentication + forward secrecy
-
-3. **Registration requires TLS.** OPAQUE doesn't bootstrap trust from
-   nothing. First registration assumes the client can trust the server
-   (via TLS). Subsequent logins are password-only. By design (RFC 9807
-   §10); real deployments may layer additional factors on top.
-
-4. **No backend in this demo.** All crypto runs client-side; both
-   "sides" are simulated in the same browser. Real deployments need a
-   server to:
-   - Store registration records
-   - Perform OPRF evaluations (server's OPRF key never leaves)
-   - Enforce rate limits to slow online attacks
-   - Possibly use an HSM to protect OPRF keys
-
-5. **Only the P256-SHA256 suite is validated.** The CFRG publishes
-   vectors for ristretto255-SHA512 as well; supporting them requires
-   generalizing this codebase across OPRF groups. The framework in
-   `src/test-vectors.ts` is ready for them.
 
 ## No Math.random()
 
@@ -282,5 +261,6 @@ the server.
 
 ---
 
-> "Whether therefore ye eat, or drink, or whatsoever ye do, do all to the glory of God."  
-> — 1 Corinthians 10:31
+*One of 60+ browser demos in the [Crypto Lab](https://crypto-lab.systemslibrarian.dev/) suite.*
+
+*"So whether you eat or drink or whatever you do, do it all for the glory of God." — 1 Corinthians 10:31*
