@@ -9,6 +9,7 @@
 
 :root,
 :root[data-theme='dark'] {
+  color-scheme: dark;
   --color-bg: #0a0a14;
   --color-bg-secondary: #0a1628;
   --color-text: #e0e6ed;
@@ -26,6 +27,7 @@
 }
 
 :root[data-theme='light'] {
+  color-scheme: light;
   --color-bg: #f5f5f7;
   --color-bg-secondary: #ffffff;
   --color-text: #1d1d1d;
@@ -54,6 +56,9 @@
 
 html {
   scroll-behavior: smooth;
+  /* Own the canvas background so WebKit doesn't promote body's bg and report
+     the page as transparent/white (breaks dark-theme contrast detection). */
+  background-color: var(--color-bg);
 }
 
 body {
@@ -509,6 +514,20 @@ footer {
 footer p {
   font-style: italic;
   line-height: 1.8;
+}
+
+/* Related-demos links sit inline in a paragraph. Give them an accessible
+   accent color (default UA link blue fails contrast on the near-black footer)
+   plus a persistent underline so they're distinguishable by more than color
+   alone (WCAG 1.4.1 link-in-text-block). */
+footer a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+footer a:hover,
+footer a:focus {
+  color: var(--color-accent-secondary);
 }
 
 /* ============================================================
