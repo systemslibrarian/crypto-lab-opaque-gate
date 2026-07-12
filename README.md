@@ -34,11 +34,11 @@ The demo simulates both client and server in one browser across five interactive
 
 ## What Can Go Wrong
 
-- **Validated, but not audited.** Every named intermediate and output matches the CFRG `vectors.json` for P256-SHA256 byte-for-byte (`src/test-vectors.ts` — 17 checks across one Real and one Fake vector), and the spec-derived protocol properties pass (`src/verify.ts` — 10 checks). That's strong evidence each derivation matches RFC 9807, but it isn't a substitute for the testing, fuzzing, constant-time review, and side-channel analysis a production deployment needs. Use a vetted PAKE library in real systems.
+- **Validated, but not audited.** Every named intermediate and output matches the CFRG `vectors.json` for P256-SHA256 byte-for-byte (`tests/test-vectors.test.ts` — 17 checks across one Real and one Fake vector), and the spec-derived protocol properties pass (`tests/verify.test.ts` — 10 checks). These run under `npm test` (vitest) and are enforced in CI on every push, so a regression in any derivation fails the build. That's strong evidence each derivation matches RFC 9807, but it isn't a substitute for the testing, fuzzing, constant-time review, and side-channel analysis a production deployment needs. Use a vetted PAKE library in real systems.
 - **Offline attack surface with OPRF key compromise.** If an attacker gets the server's OPRF key for a user (via database breach), they can try offline password guesses. Each guess costs one OPRF evaluation plus one `stretch()` (scrypt N=2^15 here ≈ 50 ms). OPAQUE's advantages: pre-computation is impossible (the OPRF key varies per user), no plaintext password exposure, mutual authentication + forward secrecy.
 - **Registration requires TLS.** OPAQUE doesn't bootstrap trust from nothing. First registration assumes the client can trust the server (via TLS). Subsequent logins are password-only. By design (RFC 9807 §10); real deployments may layer additional factors on top.
 - **No backend in this demo.** All crypto runs client-side; both "sides" are simulated in the same browser. Real deployments need a server to store registration records, perform OPRF evaluations (server's OPRF key never leaves), enforce rate limits to slow online attacks, and possibly use an HSM to protect OPRF keys.
-- **Only the P256-SHA256 suite is validated.** The CFRG publishes vectors for ristretto255-SHA512 as well; supporting them requires generalizing this codebase across OPRF groups. The framework in `src/test-vectors.ts` is ready for them.
+- **Only the P256-SHA256 suite is validated.** The CFRG publishes vectors for ristretto255-SHA512 as well; supporting them requires generalizing this codebase across OPRF groups. The framework in `tests/test-vectors.test.ts` is ready for them.
 
 ## Real-World Usage
 
@@ -207,6 +207,8 @@ grep -r "Math.random" src/
 npm install
 npm run build        # TypeScript strict, zero errors
 npm run dev          # Local development server
+npm test             # RFC 9807 KATs + protocol properties (vitest)
+npm run test:a11y    # axe-core WCAG A/AA gate (Playwright)
 ```
 
 The built output is in `dist/` — ready to deploy to GitHub Pages.
@@ -221,11 +223,13 @@ src/
   envelope.ts      — RFC 9807 §4 Store / Recover, register()
   ake.ts           — RFC 9807 §6 KE1 / KE2 / KE3, masked credential
                      response, full key schedule
-  verify.ts        — protocol-property tests (round-trip, tampering, FS)
-  test-vectors.ts  — RFC 9807 §C P256-SHA256 vector validation
-                     (Real + Fake-login)
   main.ts          — UI: five interactive exhibits
   style.css        — Dark/light theme, responsive, accessible
+
+tests/                        (run by `npm test`, never shipped in the bundle)
+  verify.test.ts       — protocol-property tests (round-trip, tampering, FS)
+  test-vectors.test.ts — RFC 9807 §C P256-SHA256 vector validation
+                         (Real + Fake-login)
 ```
 
 ## Security Considerations

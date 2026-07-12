@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
+    "test": "vitest run",
     "test:a11y": "playwright test"
   },
   "devDependencies": {
@@ -13,7 +14,8 @@
     "@playwright/test": "^1.61.1",
     "@types/node": "^20.11.0",
     "typescript": "^5.3.3",
-    "vite": "^5.0.8"
+    "vite": "^5.0.8",
+    "vitest": "^4.1.10"
   },
   "repository": {
     "type": "git",
