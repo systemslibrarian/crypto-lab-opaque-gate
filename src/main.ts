@@ -1132,9 +1132,17 @@ function initApp() {
   const footer = document.getElementById('app-footer');
   if (!header || !main || !footer) return;
 
+  header.classList.add('cl-hero');
+
   header.innerHTML = `
-    <h1>OPAQUE aPAKE Demo — RFC 9807</h1>
-    <p>Password never touches the server. Not during registration, not during login, not ever.</p>
+    <div class="cl-hero-main">
+      <h1 class="cl-hero-title">OPAQUE</h1>
+      <p class="cl-hero-sub">aPAKE · RFC 9807</p>
+    </div>
+    <aside class="cl-hero-why" aria-label="Why it matters">
+      <span class="cl-hero-why-label">WHY IT MATTERS</span>
+      <p class="cl-hero-why-text">OPAQUE lets you log in with a password the server never learns — not at signup, not at login, not ever. A database breach leaks no passwords to steal or reuse, and both sides prove their identity while agreeing on a fresh session key.</p>
+    </aside>
   `;
 
   const themeToggle = document.createElement('button');

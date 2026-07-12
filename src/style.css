@@ -127,24 +127,20 @@ main:focus {
    ============================================================ */
 
 .app-header {
-  background: linear-gradient(135deg, var(--color-bg-secondary), var(--color-bg));
-  padding: 2rem 1rem;
-  border-bottom: 2px solid var(--color-border);
+  padding: 0 1rem;
   position: relative;
-  margin-bottom: 2rem;
 }
 
-.app-header h1 {
-  font-size: 2rem;
-  margin-bottom: 0.5rem;
-  color: var(--color-gold);
-  padding-right: 4rem; /* leave room for toggle */
-}
-
-.app-header p {
-  color: var(--color-text-secondary);
-  font-size: 0.95rem;
-}
+/* BEGIN cl-hero standard — managed, keep in sync across fleet */
+.cl-hero{display:flex;align-items:flex-start;justify-content:space-between;gap:clamp(1rem,4vw,3rem);flex-wrap:wrap;margin:clamp(1rem,3vw,2rem) 0 1.5rem;}
+.cl-hero-main{flex:1 1 22rem;min-width:min(100%,20rem);}
+.cl-hero-title{margin:0;font-size:clamp(1.6rem,3.8vw,2.7rem);font-weight:700;line-height:1.1;letter-spacing:.01em;color:var(--color-gold);}
+.cl-hero-sub{margin:.4rem 0 0;font-size:clamp(.9rem,1.6vw,1.05rem);letter-spacing:.01em;opacity:.85;color:var(--color-text-secondary);}
+.cl-hero-why{flex:0 1 min(40%,26rem);min-width:min(100%,15rem);border:1px solid color-mix(in srgb, var(--color-accent) 40%, var(--color-border));border-radius:10px;padding:.85rem 1.05rem;background:color-mix(in srgb, var(--color-accent) 8%, transparent);}
+.cl-hero-why-label{display:block;font-size:.68rem;font-weight:700;letter-spacing:.14em;color:var(--color-accent);}
+.cl-hero-why-text{margin:.35rem 0 0;font-size:.95rem;line-height:1.5;color:var(--color-text);}
+@media (max-width:640px){.cl-hero{flex-direction:column;}.cl-hero-why{flex-basis:auto;width:100%;}}
+/* END cl-hero standard */
 
 .theme-toggle {
   position: absolute;
@@ -1022,19 +1018,6 @@ a:focus-visible,
     font-size: 15px;
   }
 
-  .app-header {
-    padding: 1.5rem 1rem 1rem;
-  }
-
-  .app-header h1 {
-    font-size: 1.4rem;
-    padding-right: 0;
-  }
-
-  .app-header p {
-    font-size: 0.85rem;
-  }
-
   /* Theme toggle moves into header flow rather than overlapping. */
   .theme-toggle {
     position: static;
@@ -1083,15 +1066,11 @@ a:focus-visible,
   }
 
   .app-header {
-    padding: 2.5rem 2rem;
+    padding: 0 2rem;
   }
 }
 
 @media (min-width: 1024px) {
-  .app-header h1 {
-    font-size: 2.5rem;
-  }
-
   .exhibit {
     padding: 2.5rem;
   }
