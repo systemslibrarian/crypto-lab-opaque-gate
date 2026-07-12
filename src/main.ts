@@ -1138,10 +1138,11 @@ function initApp() {
     <div class="cl-hero-main">
       <h1 class="cl-hero-title">OPAQUE</h1>
       <p class="cl-hero-sub">aPAKE · RFC 9807</p>
+      <p class="cl-hero-desc">Runs the real OPRF → encrypted-envelope → 3-message 3DH handshake so you can step through a registration and login where the server never sees your password.</p>
     </div>
     <aside class="cl-hero-why" aria-label="Why it matters">
       <span class="cl-hero-why-label">WHY IT MATTERS</span>
-      <p class="cl-hero-why-text">OPAQUE lets you log in with a password the server never learns — not at signup, not at login, not ever. A database breach leaks no passwords to steal or reuse, and both sides prove their identity while agreeing on a fresh session key.</p>
+      <p class="cl-hero-why-text">Breaches leak billions of reused credentials every year. OPAQUE makes a stolen database useless: there is no password, and no crackable password hash, for an attacker to walk away with.</p>
     </aside>
   `;
 
