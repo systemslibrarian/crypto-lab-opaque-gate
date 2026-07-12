@@ -30,7 +30,7 @@ This is the most practically relevant password authentication scheme for the pos
 
 **[systemslibrarian.github.io/crypto-lab-opaque-gate](https://systemslibrarian.github.io/crypto-lab-opaque-gate/)**
 
-The demo simulates both client and server in one browser across five interactive exhibits: why plaintext and hashed password auth is broken, the blind/evaluate/unblind OPRF flow showing what the server sees versus never sees, the full KE1 → KE2 → KE3 registration and login message flow with session-key agreement and mutual authentication, a server-breach simulation that shows why offline dictionary attacks are possible but pre-computation is not, and a tour of real-world deployments.
+The demo simulates both client and server in one browser across five interactive exhibits: why plaintext and salted-hash password auth is broken (grounded in your own registered envelope), a live obliviousness demo where re-running the OPRF with a fresh blinding factor changes the wire value but not the recovered secret, a *stepped* KE1 → KE2 → KE3 login handshake you walk one message at a time — including a wrong-password path where you watch the envelope MAC fail — a server-breach simulation that attacks your real envelope and measures the offline-guess cost live from the browser's actual scrypt, and a tour of real-world deployments.
 
 ## What Can Go Wrong
 
@@ -182,13 +182,13 @@ Auth failure: Attacker cannot forge login without correct password
 
 The demo includes five interactive exhibits:
 
-1. **Why Current Password Auth Is Broken**: Compare plaintext, hashed, and OPAQUE to show the breach risk at each level.
+1. **Why Current Password Auth Is Broken**: Compare plaintext, salted-hash, and OPAQUE breach outcomes. Once you register in Exhibit 3, the OPAQUE row shows *your own* stored envelope bytes — the exact record the server holds — rather than a canned string.
 
-2. **The OPRF**: Interactive blind/evaluate/unblind flow showing what server sees vs. never sees.
+2. **The OPRF**: A one-picture "locked box" primer plus a live obliviousness demo. Press **Run OPRF**, then **Run again (fresh r)**, and watch side-by-side runs: the blinding factor `r` and the on-the-wire **Blind** change every time (changed bytes highlighted), while the recovered **RWD** stays byte-for-byte identical (also highlighted) — so the server gets fresh noise it can't correlate, yet the client always recovers the same secret. Expand-on-demand definitions for RWD, envelope, 3DH, aPAKE, and HKDF-Extract.
 
-3. **Registration and Login Protocol**: Full message flow (KE1 → KE2 → KE3) with session key agreement and mutual authentication.
+3. **Registration and the Login Handshake**: Registration shows the client handing the server only a public key, masking key, and envelope (no password, no hash). Login is **stepped**: walk KE1 → KE2 → KE3 one message at a time as cards move between the CLIENT and SERVER columns, each listing what it carries *and what it never carries*. A **wrong-password** checkbox lets you watch envelope recovery fail — the MAC mismatch aborts the handshake at KE3 with the specific broken step named.
 
-4. **Server Breach Simulation**: Analyze attack scenarios when the database is compromised. Show why offline dictionary attacks _are_ possible with OPRF key, but pre-computation is impossible.
+4. **Server Breach Simulation**: Runs the four breach attacks against the envelope you registered in Exhibit 3, and measures the offline-guess cost **live** from this browser's real `scrypt` (N=2¹⁵) rather than quoting a fixed figure. Shows why offline dictionary attacks _are_ possible with the OPRF key but stay throttled, and why pre-computation is impossible.
 
 5. **Real-World Deployments**: WhatsApp, Cloudflare, Apple, 1Password. Library patron privacy impact.
 
