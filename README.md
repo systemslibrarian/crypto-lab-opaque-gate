@@ -4,6 +4,8 @@
 
 A browser-based educational demo of **OPAQUE** (RFC 9807, July 2025) — an Augmented Password-Authenticated Key Exchange (aPAKE) where **the server never sees the password**, not during registration, not during login, not ever.
 
+It opens with a one-screen **map of the whole protocol** (`password → OPRF → RWD → envelope → keys → 3DH → session`, each stage clickable to jump to the exhibit that runs it) so a newcomer meets the three stacked primitives in dependency order before diving into any one of them.
+
 This is the most practically relevant password authentication scheme for the post-hash-compromise era:
 
 - **Registration**: Client generates credentials, encrypts them with a key derived from the password via an Oblivious PRF. Server stores only the encrypted envelope, the OPRF evaluation key, and the client's public key. Zero password bytes.
@@ -30,7 +32,7 @@ This is the most practically relevant password authentication scheme for the pos
 
 **[systemslibrarian.github.io/crypto-lab-opaque-gate](https://systemslibrarian.github.io/crypto-lab-opaque-gate/)**
 
-The demo simulates both client and server in one browser across five interactive exhibits: why plaintext and salted-hash password auth is broken (grounded in your own registered envelope), a live obliviousness demo where re-running the OPRF with a fresh blinding factor changes the wire value but not the recovered secret, a *stepped* KE1 → KE2 → KE3 login handshake you walk one message at a time — including a wrong-password path where you watch the envelope MAC fail — a server-breach simulation that attacks your real envelope and measures the offline-guess cost live from the browser's actual scrypt, and a tour of real-world deployments.
+The demo simulates both client and server in one browser. It opens with a clickable **map of the whole protocol**, then five interactive exhibits: why plaintext and salted-hash password auth is broken (grounded in your own registered envelope), a live obliviousness demo where re-running the OPRF with a fresh blinding factor changes the wire value but not the recovered secret, a *stepped* KE1 → KE2 → KE3 login handshake you walk one message at a time — with cards that cross the CLIENT ↔ SERVER gap, tappable definitions on the jargon in each byte-grid label, a wrong-password path where you watch the envelope MAC fail, and — on success — a **drawn 3DH diagram** (four keypairs, three labeled pairings feeding one session key) plus a *poke-the-forward-secrecy* button, a server-breach simulation that attacks your real envelope and measures the offline-guess cost live from the browser's actual scrypt, and a tour of real-world deployments.
 
 ## What Can Go Wrong
 
@@ -180,13 +182,13 @@ Auth failure: Attacker cannot forge login without correct password
 
 ## Exhibit Tour
 
-The demo includes five interactive exhibits:
+The demo opens with a **Start Here** map of the whole protocol — `password → OPRF → RWD → envelope → keys → 3DH → session` laid out top to bottom, with the three operations (OPRF, envelope, 3DH) boxed and clickable to jump straight to the exhibit that runs each one. It states the OPRF's *purpose* ("turn a weak password into a strong key the server can't derive") up front, before the mechanics, so the primitives are met in dependency order. Below it are five interactive exhibits:
 
 1. **Why Current Password Auth Is Broken**: Compare plaintext, salted-hash, and OPAQUE breach outcomes. Once you register in Exhibit 3, the OPAQUE row shows *your own* stored envelope bytes — the exact record the server holds — rather than a canned string.
 
-2. **The OPRF**: A one-picture "locked box" primer plus a live obliviousness demo. Press **Run OPRF**, then **Run again (fresh r)**, and watch side-by-side runs: the blinding factor `r` and the on-the-wire **Blind** change every time (changed bytes highlighted), while the recovered **RWD** stays byte-for-byte identical (also highlighted) — so the server gets fresh noise it can't correlate, yet the client always recovers the same secret. Expand-on-demand definitions for RWD, envelope, 3DH, aPAKE, and HKDF-Extract.
+2. **The OPRF**: Leads with a plain statement of *what this stage is for*, then a one-picture "locked box" primer plus a live obliviousness demo. Press **Run OPRF**, then **Run again (fresh r)**, and watch side-by-side runs: the blinding factor `r` and the on-the-wire **Blind** change every time (changed bytes highlighted), while the recovered **RWD** stays byte-for-byte identical (also highlighted) — so the server gets fresh noise it can't correlate, yet the client always recovers the same secret. Expand-on-demand definitions for RWD, envelope, 3DH, aPAKE, and HKDF-Extract.
 
-3. **Registration and the Login Handshake**: Registration shows the client handing the server only a public key, masking key, and envelope (no password, no hash). Login is **stepped**: walk KE1 → KE2 → KE3 one message at a time as cards move between the CLIENT and SERVER columns, each listing what it carries *and what it never carries*. A **wrong-password** checkbox lets you watch envelope recovery fail — the MAC mismatch aborts the handshake at KE3 with the specific broken step named.
+3. **Registration and the Login Handshake**: Registration shows the client handing the server only a public key, masking key, and envelope (no password, no hash). Login is **stepped**: walk KE1 → KE2 → KE3 one message at a time as each card animates *across* the gap from the sending column to the receiving one, listing what it carries *and what it never carries*. Jargon in the byte-grid labels (`masked_response`, `evaluated_message`, `keyshare`, `preamble`, …) is **tappable** — click a term for an inline definition at the point of confusion. A **wrong-password** checkbox lets you watch envelope recovery fail — the MAC mismatch aborts the handshake at KE3 with the specific broken step named. On a successful login the exhibit **draws the 3DH**: the client and server static + ephemeral keypairs as four labeled dots, the three DH pairings as connecting lines (each labeled with what it buys — `dh1` = forward secrecy, `dh2`/`dh3` = mutual auth) feeding one session-key box, with the real shared-secret bytes shown. A **"Leak this session key"** button then turns the forward-secrecy claim into something you can poke: it shows the leaked key reveals nothing about the password and can't recompute other sessions, contrasted with a static-only scheme that would have no forward secrecy.
 
 4. **Server Breach Simulation**: Runs the four breach attacks against the envelope you registered in Exhibit 3, and measures the offline-guess cost **live** from this browser's real `scrypt` (N=2¹⁵) rather than quoting a fixed figure. Shows why offline dictionary attacks _are_ possible with the OPRF key but stay throttled, and why pre-computation is impossible.
 

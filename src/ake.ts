@@ -396,6 +396,22 @@ serverKeyshare = p256.getPublicKey(serverEphemeralPrivate, true);
 // Client step 3
 // ============================================================
 
+/**
+ * The three Diffie-Hellman shared secrets and the four public keys that feed
+ * them, surfaced for visualization. These are the *real* values computed during
+ * the client's 3DH (§6.4.4) — nothing here is faked; the exhibit only draws
+ * what login already produced.
+ */
+export interface ThreeDHTrace {
+  clientEphemeralPublic: Uint8Array;
+  clientStaticPublic: Uint8Array;
+  serverEphemeralPublic: Uint8Array;
+  serverStaticPublic: Uint8Array;
+  dh1: Uint8Array; // client_eph × server_eph  → forward secrecy
+  dh2: Uint8Array; // client_eph × server_static → authenticates the server
+  dh3: Uint8Array; // client_static × server_eph → authenticates the client
+}
+
 export async function clientLoginStep3(
   ke2: AKEMessage2,
   clientState: ClientState
@@ -403,6 +419,7 @@ export async function clientLoginStep3(
   ke3: AKEMessage3;
   sessionKey: Uint8Array;
   exportKey: Uint8Array;
+  threeDH: ThreeDHTrace;
 }> {
   const passwordBytes = new TextEncoder().encode(clientState.password);
 
@@ -469,7 +486,16 @@ export async function clientLoginStep3(
   return {
     ke3: { clientMac },
     sessionKey,
-    exportKey
+    exportKey,
+    threeDH: {
+      clientEphemeralPublic: clientState.clientEphemeralPublic,
+      clientStaticPublic: clientPublicKey,
+      serverEphemeralPublic: ke2.serverKeyshare,
+      serverStaticPublic: serverPublicKey,
+      dh1,
+      dh2,
+      dh3
+    }
   };
 }
 

@@ -26,7 +26,8 @@ import {
   AKEMessage2,
   AKEMessage3,
   ClientState,
-  ServerState
+  ServerState,
+  ThreeDHTrace
 } from './ake';
 
 // ============================================================
@@ -132,6 +133,8 @@ function createByteGrid(
     changedMask?: boolean[];
     note?: string;
     maxBytes?: number;
+    /** Optional trusted HTML for the label (used for inline tappable terms). */
+    labelHtml?: string;
   } = {}
 ): HTMLElement {
   const wrap = document.createElement('div');
@@ -139,7 +142,8 @@ function createByteGrid(
 
   const label = document.createElement('strong');
   label.className = 'bytegrid-label';
-  label.textContent = title;
+  if (opts.labelHtml) label.innerHTML = opts.labelHtml;
+  else label.textContent = title;
   wrap.appendChild(label);
 
   const maxBytes = opts.maxBytes ?? 24;
@@ -205,6 +209,83 @@ function createDetails(summary: string, bodyHtml: string, className = 'primer'):
   body.innerHTML = bodyHtml;
   details.appendChild(body);
   return details;
+}
+
+// ============================================================
+// Tappable jargon — inline, expand-on-click definitions
+// ============================================================
+
+/**
+ * One-line definitions for the terms that show up inside byte-grid labels and
+ * status text, where a newcomer can't reach the glossary. `term()` wraps a word
+ * in a <button> that toggles a small popover with the definition, so the meaning
+ * is available at the point of confusion. Definitions are plain text (escaped).
+ */
+const TERM_DEFS: Record<string, string> = {
+  RWD: 'Randomized password: the 32-byte secret the client recovers by unblinding the OPRF. A deterministic function of the password AND the server’s per-user key. Every credential key is derived from it. The server never sees it.',
+  randomized_pwd: 'The HKDF-Extract of the (scrypt-stretched) OPRF output. Same thing as the RWD in this demo’s code — the uniform pseudorandom key that every credential key is expanded from.',
+  'HKDF-Extract': 'The “concentrate the entropy” half of HKDF (RFC 5869): maps messy input keying material to one uniform pseudorandom key that HKDF-Expand then fans out into named keys.',
+  blinded_message: 'The hashed password point multiplied by a fresh random factor r. This is what crosses the wire to the server — it looks like random noise and changes every login.',
+  evaluated_message: 'The blinded point after the server multiplied it by its secret OPRF key k. Still blinded, so the server learned nothing; the client will divide out r to finish.',
+  masked_response: 'The server’s public key and the user’s envelope, XORed with a keystream derived from the per-user masking_key. Without the right password (→ RWD → masking_key) it is indistinguishable from random.',
+  masking_key: 'A per-user key (derived from the RWD) the server uses to mask its response. The client re-derives it from the password on login to unmask the envelope.',
+  envelope: 'What the server stores per user: a nonce plus one HMAC tag over the credentials. The client’s long-term private key is NOT stored — it is re-derived from the RWD every login. A wrong password fails the tag.',
+  envelope_nonce: 'The random nonce inside the envelope. Combined with the auth_key it produces the HMAC tag that lets the client detect a wrong password or a tampered record.',
+  keyshare: 'An ephemeral (single-use) Diffie-Hellman public key. Each side sends a fresh one per login; mixing the two ephemerals is what gives the session forward secrecy.',
+  preamble: 'The handshake transcript: a byte string committing to the context, identities, and every message sent (KE1, the credential response, the server nonce and keyshare). Both MACs are computed over its hash, so any tampering breaks authentication.',
+  'server_mac': 'A MAC the server computes over the preamble hash. The client checks it to prove it is talking to the real server (not an impostor) before revealing its own MAC.',
+  '3DH': 'Three Diffie-Hellman: the login mixes three DH shared secrets — ephemeral×ephemeral (forward secrecy) plus ephemeral×static and static×ephemeral (mutual authentication) — into one key schedule. Visualized at the end of a successful login.',
+  session_key: 'The shared secret both sides independently arrive at after a successful 3DH handshake. Used to encrypt the session. Fresh every login; leaking one reveals nothing about past or future sessions.',
+  export_key: 'An extra key the client (only) derives from the RWD, stable across logins. Apps use it to encrypt client-side data (e.g. an E2E-encrypted backup) that even the server can’t read.'
+};
+
+let termIdCounter = 0;
+/**
+ * Return an HTML string for a tappable term. Uses a native popover-less pattern:
+ * a <button> with aria-expanded controlling a sibling definition span, wired up
+ * by delegated click handling in `wireTerms`. Safe to inject via innerHTML.
+ */
+function termHtml(word: string, key = word): string {
+  const def = TERM_DEFS[key];
+  if (!def) return escapeHtml(word);
+  const id = `termdef-${++termIdCounter}`;
+  return (
+    `<span class="jargon-wrap">` +
+    `<button type="button" class="jargon" aria-expanded="false" aria-controls="${id}" ` +
+    `data-term="${escapeHtml(key)}">${escapeHtml(word)}<span class="jargon-mark" aria-hidden="true">?</span></button>` +
+    `<span class="jargon-def" id="${id}" role="tooltip" hidden>${escapeHtml(def)}</span>` +
+    `</span>`
+  );
+}
+
+/** Create a real DOM node for a tappable term (for appendChild call sites). */
+function termNode(word: string, key = word): HTMLElement {
+  const span = document.createElement('span');
+  span.innerHTML = termHtml(word, key);
+  return span.firstElementChild as HTMLElement;
+}
+
+/** Delegated toggle for all .jargon buttons under `root`. Idempotent per root. */
+function wireTerms(root: HTMLElement): void {
+  root.addEventListener('click', e => {
+    const btn = (e.target as HTMLElement).closest('.jargon') as HTMLButtonElement | null;
+    if (!btn || !root.contains(btn)) return;
+    const defId = btn.getAttribute('aria-controls');
+    const def = defId ? root.querySelector<HTMLElement>(`#${CSS.escape(defId)}`) : null;
+    if (!def) return;
+    const open = btn.getAttribute('aria-expanded') === 'true';
+    // Close any other open term first (one popover at a time).
+    root.querySelectorAll<HTMLButtonElement>('.jargon[aria-expanded="true"]').forEach(b => {
+      if (b !== btn) {
+        b.setAttribute('aria-expanded', 'false');
+        const d = b.getAttribute('aria-controls');
+        const el = d ? root.querySelector<HTMLElement>(`#${CSS.escape(d)}`) : null;
+        if (el) el.hidden = true;
+      }
+    });
+    btn.setAttribute('aria-expanded', String(!open));
+    def.hidden = open;
+  });
 }
 
 // ============================================================
@@ -316,6 +397,125 @@ function createGlossary(): HTMLElement {
 }
 
 // ============================================================
+// Exhibit 0: Map of the whole protocol (overview + jump links)
+// ============================================================
+
+/**
+ * A one-screen overview shown before the mechanics. It answers the question a
+ * newcomer has *before* meeting the OPRF — "why does a password need to become a
+ * key at all, and why can't the server just derive it?" — and lays out the whole
+ * pipeline as clickable stages that jump to the exhibit that teaches each one.
+ */
+function createProtocolMap(): HTMLElement {
+  const exhibit = createContainer('Start Here: The Whole Protocol on One Screen');
+
+  const intro = document.createElement('p');
+  intro.innerHTML = `
+    OPAQUE lets you log in with a password <strong>without the server ever learning
+    it</strong> — not even a crackable hash of it. To pull that off it chains three
+    ideas. Here is the whole pipeline; each stage below jumps to the exhibit that
+    shows it running for real. Read it top to bottom once, then dive in.
+  `;
+  exhibit.appendChild(intro);
+
+  const goal = document.createElement('p');
+  goal.className = 'map-goal';
+  goal.innerHTML = `
+    <strong>The one job:</strong> turn a weak, human password into a strong
+    cryptographic key — and do it so the <em>server can’t</em> derive that key on its
+    own (so a breach is worthless) yet the <em>right client</em> always can. That is
+    what the first stage, the OPRF, buys you. Everything after it uses that key.
+  `;
+  exhibit.appendChild(goal);
+
+  interface Stage {
+    kind: 'value' | 'op';
+    label: string;
+    sub: string;
+    target?: string;
+    targetLabel?: string;
+  }
+  const stages: Stage[] = [
+    { kind: 'value', label: 'password', sub: 'weak, human, secret — never leaves the client' },
+    {
+      kind: 'op',
+      label: 'OPRF',
+      sub: 'server helps derive a key but stays blind to the password',
+      target: 'exhibit-oprf',
+      targetLabel: 'Exhibit 2'
+    },
+    { kind: 'value', label: 'RWD', sub: 'a strong key only the right password can recover' },
+    {
+      kind: 'op',
+      label: 'envelope',
+      sub: 'the RWD locks a credential the server stores but can’t open',
+      target: 'exhibit-reg',
+      targetLabel: 'Exhibit 3'
+    },
+    { kind: 'value', label: 'client keys', sub: 'long-term identity, re-derived each login' },
+    {
+      kind: 'op',
+      label: '3DH',
+      sub: 'three Diffie-Hellmans → mutual auth + forward secrecy',
+      target: 'exhibit-login',
+      targetLabel: 'Exhibit 3'
+    },
+    { kind: 'value', label: 'session key', sub: 'shared secret; the server proved its identity too' }
+  ];
+
+  const map = document.createElement('ol');
+  map.className = 'protocol-map';
+  map.setAttribute('aria-label', 'OPAQUE pipeline, password to session key');
+
+  stages.forEach((st, i) => {
+    const li = document.createElement('li');
+    li.className = `map-stage map-${st.kind}`;
+
+    let node: HTMLElement;
+    if (st.target) {
+      const a = document.createElement('a');
+      a.href = `#${st.target}`;
+      a.className = 'map-node map-link';
+      a.innerHTML =
+        `<span class="map-label">${escapeHtml(st.label)}</span>` +
+        `<span class="map-sub">${escapeHtml(st.sub)}</span>` +
+        `<span class="map-jump">${escapeHtml(st.targetLabel ?? '')} →</span>`;
+      node = a;
+    } else {
+      const d = document.createElement('div');
+      d.className = 'map-node';
+      d.innerHTML =
+        `<span class="map-label">${escapeHtml(st.label)}</span>` +
+        `<span class="map-sub">${escapeHtml(st.sub)}</span>`;
+      node = d;
+    }
+    li.appendChild(node);
+
+    if (i < stages.length - 1) {
+      const arrow = document.createElement('span');
+      arrow.className = 'map-arrow';
+      arrow.setAttribute('aria-hidden', 'true');
+      arrow.textContent = '↓';
+      li.appendChild(arrow);
+    }
+    map.appendChild(li);
+  });
+  exhibit.appendChild(map);
+
+  const legend = document.createElement('p');
+  legend.className = 'map-legend';
+  legend.innerHTML = `
+    <span class="map-chip map-chip-op">boxed</span> = an operation you can watch run.
+    <span class="map-chip map-chip-value">plain</span> = a value it produces. The three
+    boxed steps are OPAQUE’s three stacked primitives; the exhibits below take them one
+    at a time, in this order.
+  `;
+  exhibit.appendChild(legend);
+
+  return exhibit;
+}
+
+// ============================================================
 // Exhibit 1: Why Current Password Auth Is Broken
 // ============================================================
 
@@ -410,6 +610,17 @@ function escapeHtml(s: string): string {
 
 function createExhibit2(): HTMLElement {
   const exhibit = createContainer('Exhibit 2: The OPRF — Hiding Password from Server');
+  exhibit.id = 'exhibit-oprf';
+
+  const purpose = document.createElement('p');
+  purpose.className = 'exhibit-purpose';
+  purpose.innerHTML = `
+    <strong>What this stage is for:</strong> turn the weak password into a strong key
+    (the <span class="tag tag-rwd">RWD</span>) that the server helps compute but can
+    <em>never</em> derive on its own. That is the whole point of the OPRF — the two
+    later stages (envelope, 3DH) just build on the key it produces.
+  `;
+  exhibit.appendChild(purpose);
 
   exhibit.appendChild(createGlossary());
 
@@ -592,11 +803,268 @@ function createExhibit2(): HTMLElement {
 }
 
 // ============================================================
+// 3DH visualizer — the authenticated key exchange, drawn
+// ============================================================
+
+const SVG_NS = 'http://www.w3.org/2000/svg';
+function svgEl(name: string, attrs: Record<string, string>): SVGElement {
+  const el = document.createElementNS(SVG_NS, name);
+  for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
+  return el;
+}
+
+/**
+ * Draw the three Diffie-Hellman combinations that authenticate an OPAQUE login.
+ * Four dots = the four public keys (client static/ephemeral, server
+ * static/ephemeral). Three lines = the three DH shared secrets, each labeled
+ * with the real first bytes it produced and with what security property it buys.
+ * All values come from the actual login (ThreeDHTrace) — nothing is invented.
+ */
+function createThreeDHDiagram(t: ThreeDHTrace): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'threedh';
+
+  const heading = document.createElement('strong');
+  heading.className = 'threedh-title';
+  heading.innerHTML =
+    'The 3DH that just authenticated this login';
+  wrap.appendChild(heading);
+
+  const lede = document.createElement('p');
+  lede.className = 'threedh-lede';
+  lede.innerHTML =
+    'Each side holds two keypairs: a <em>static</em> one (its long-term identity) and a ' +
+    'fresh <em>ephemeral</em> one (single-use, this login only). OPAQUE combines them three ' +
+    'ways with Diffie-Hellman and stirs all three secrets into one key schedule. The three ' +
+    'pairings are what make the handshake mutually authenticated <em>and</em> forward-secret.';
+  wrap.appendChild(lede);
+
+  // ---- SVG diagram ----------------------------------------------------------
+  // Layout: client keys on the left, server keys on the right, session box
+  // centered below. Wide viewBox leaves room for the dot labels either side.
+  const W = 440;
+  const H = 250;
+  const svg = svgEl('svg', {
+    viewBox: `0 0 ${W} ${H}`,
+    class: 'threedh-svg',
+    role: 'img',
+    'aria-label':
+      'Diagram: client ephemeral and static keys on the left, server ephemeral and static ' +
+      'keys on the right. Three lines connect them: ephemeral-to-ephemeral gives forward ' +
+      'secrecy, client-ephemeral to server-static and client-static to server-ephemeral give ' +
+      'mutual authentication. All three feed one session key.'
+  }) as SVGSVGElement;
+
+  // Dot coordinates. Dots sit well inside the viewBox so their outward labels
+  // ("client static", "server ephemeral", …) have room and don't clip.
+  const cEph = { x: 135, y: 45 };
+  const cStat = { x: 135, y: 120 };
+  const sEph = { x: 305, y: 45 };
+  const sStat = { x: 305, y: 120 };
+  const session = { x: 220, y: 210 };
+
+  const lines: Array<{
+    a: { x: number; y: number };
+    b: { x: number; y: number };
+    cls: string;
+    id: string;
+  }> = [
+    { a: cEph, b: sEph, cls: 'dh1', id: 'dh1-line' }, // eph × eph
+    { a: cEph, b: sStat, cls: 'dh2', id: 'dh2-line' }, // eph × static
+    { a: cStat, b: sEph, cls: 'dh3', id: 'dh3-line' } // static × eph
+  ];
+  for (const ln of lines) {
+    svg.appendChild(
+      svgEl('line', {
+        x1: String(ln.a.x),
+        y1: String(ln.a.y),
+        x2: String(ln.b.x),
+        y2: String(ln.b.y),
+        class: `threedh-line threedh-line-${ln.cls}`
+      })
+    );
+  }
+
+  // Lines from each dot down into the session box.
+  for (const p of [cEph, cStat, sEph, sStat]) {
+    svg.appendChild(
+      svgEl('line', {
+        x1: String(p.x),
+        y1: String(p.y),
+        x2: String(session.x),
+        y2: String(session.y - 18),
+        class: 'threedh-feed'
+      })
+    );
+  }
+
+  const dot = (p: { x: number; y: number }, label: string, side: 'l' | 'r') => {
+    svg.appendChild(svgEl('circle', { cx: String(p.x), cy: String(p.y), r: '9', class: `threedh-dot threedh-dot-${side}` }));
+    const txt = svgEl('text', {
+      x: String(side === 'l' ? p.x - 14 : p.x + 14),
+      y: String(p.y + 4),
+      class: 'threedh-dotlabel',
+      'text-anchor': side === 'l' ? 'end' : 'start'
+    });
+    txt.textContent = label;
+    svg.appendChild(txt);
+  };
+  dot(cEph, 'client ephemeral', 'l');
+  dot(cStat, 'client static', 'l');
+  dot(sEph, 'server ephemeral', 'r');
+  dot(sStat, 'server static', 'r');
+
+  // Session key box.
+  svg.appendChild(
+    svgEl('rect', {
+      x: String(session.x - 60),
+      y: String(session.y - 18),
+      width: '120',
+      height: '34',
+      rx: '6',
+      class: 'threedh-session'
+    })
+  );
+  const sessLabel = svgEl('text', {
+    x: String(session.x),
+    y: String(session.y + 4),
+    class: 'threedh-sessionlabel',
+    'text-anchor': 'middle'
+  });
+  sessLabel.textContent = 'session key';
+  svg.appendChild(sessLabel);
+
+  wrap.appendChild(svg);
+
+  // ---- Per-line explanation cards (with the real DH bytes) ------------------
+  const legend = document.createElement('div');
+  legend.className = 'threedh-legend';
+
+  const shortHex = (b: Uint8Array) => hex(b.subarray(0, 6)) + '…';
+  const rows: Array<{ cls: string; name: string; pairing: string; buys: string; buysCls: string; bytes: Uint8Array }> = [
+    {
+      cls: 'dh1',
+      name: 'dh1',
+      pairing: 'client ephemeral × server ephemeral',
+      buys: 'forward secrecy',
+      buysCls: 'buys-fs',
+      bytes: t.dh1
+    },
+    {
+      cls: 'dh2',
+      name: 'dh2',
+      pairing: 'client ephemeral × server static',
+      buys: 'authenticates the server',
+      buysCls: 'buys-auth',
+      bytes: t.dh2
+    },
+    {
+      cls: 'dh3',
+      name: 'dh3',
+      pairing: 'client static × server ephemeral',
+      buys: 'authenticates the client',
+      buysCls: 'buys-auth',
+      bytes: t.dh3
+    }
+  ];
+  rows.forEach(r => {
+    const card = document.createElement('div');
+    card.className = `threedh-row threedh-row-${r.cls}`;
+    card.innerHTML =
+      `<span class="threedh-swatch threedh-swatch-${r.cls}" aria-hidden="true"></span>` +
+      `<div class="threedh-rowbody">` +
+      `<span class="threedh-rowname"><code>${r.name}</code> = ${escapeHtml(r.pairing)}</span>` +
+      `<span class="threedh-buys ${r.buysCls}">${escapeHtml(r.buys)}</span>` +
+      `<span class="threedh-bytes">shared secret ${escapeHtml(shortHex(r.bytes))} (mixed into the key schedule)</span>` +
+      `</div>`;
+    legend.appendChild(card);
+  });
+  wrap.appendChild(legend);
+
+  const why = document.createElement('p');
+  why.className = 'threedh-why';
+  why.innerHTML =
+    '<strong>Why three, not one?</strong> <code>dh1</code> uses only the throwaway ephemeral ' +
+    'keys, so even if both long-term keys leak later, this session key can’t be recomputed — ' +
+    'that is <span class="buys-fs">forward secrecy</span>. <code>dh2</code> and <code>dh3</code> ' +
+    'each fold in one side’s <em>static</em> key, so only the party holding that long-term ' +
+    'secret can produce the matching MAC — that is <span class="buys-auth">mutual ' +
+    'authentication</span>. The key schedule is <code>HKDF-Extract("", dh1 ‖ dh2 ‖ dh3)</code>: ' +
+    'drop any one and both the session key and the MACs change, so the handshake fails.';
+  wrap.appendChild(why);
+
+  return wrap;
+}
+
+/**
+ * A small, pokeable forward-secrecy demonstration attached under the 3DH
+ * diagram. "Leak" the real session key and show, concretely, that it (a) has no
+ * path back to the password, and (b) can't be reproduced from the long-term keys
+ * alone, because dh1 mixed in ephemeral secrets that are now gone. Contrasted
+ * with a hypothetical static-only scheme where the same long-term keys would
+ * always regenerate the same key (no forward secrecy). Nothing is faked: the
+ * ephemeral secret keys genuinely never leave the AKE, so the demo can only
+ * *state* they're destroyed — which is exactly the security argument.
+ */
+function addForwardSecrecyPoke(host: HTMLElement, sessionKey: Uint8Array): void {
+  const wrap = document.createElement('div');
+  wrap.className = 'fs-poke';
+
+  const h = document.createElement('strong');
+  h.className = 'fs-poke-title';
+  h.textContent = 'Poke the forward-secrecy claim';
+  wrap.appendChild(h);
+
+  const p = document.createElement('p');
+  p.className = 'fs-poke-lede';
+  p.innerHTML =
+    'Suppose an attacker records this whole login off the wire and later steals ' +
+    'this exact <span class="tag tag-rwd">session key</span>. What did they get?';
+  wrap.appendChild(p);
+
+  const out = createStatusRegion('fs-poke-out');
+  wrap.appendChild(out);
+
+  const btn = createButton('Leak this session key', () => {
+    out.replaceChildren();
+
+    const grid = createByteGrid('LEAKED session_key', sessionKey, {
+      variant: 'secret',
+      note: 'the attacker now holds every one of these bytes'
+    });
+    out.appendChild(grid);
+
+    const facts = document.createElement('div');
+    facts.className = 'fs-facts';
+    facts.innerHTML =
+      `<div class="fs-fact fs-good"><span aria-hidden="true">✓</span> ` +
+      `<span>The password and the <span class="tag tag-rwd">RWD</span> are safe. The session ` +
+      `key is an HKDF output; there is no computational path from it back to the OPRF output ` +
+      `or the password.</span></div>` +
+      `<div class="fs-fact fs-good"><span aria-hidden="true">✓</span> ` +
+      `<span>Past and future logins are safe. Each mixes in <code>dh1</code> = ` +
+      `ephemeral×ephemeral, and those ephemeral private keys were discarded when the handshake ` +
+      `finished — they were never stored and never sent. Without them this key can’t be ` +
+      `recomputed, and the next login draws fresh ones.</span></div>` +
+      `<div class="fs-fact fs-bad"><span aria-hidden="true">✗</span> ` +
+      `<span><strong>Contrast — a static-only scheme</strong> (no ephemeral keys, key derived ` +
+      `from long-term keys alone): stealing the long-term keys once would regenerate <em>every</em> ` +
+      `past and future session key. That scheme has <em>no</em> forward secrecy. The single ` +
+      `<code>dh1</code> term is the entire difference.</span></div>`;
+    out.appendChild(facts);
+    return Promise.resolve();
+  });
+  wrap.appendChild(btn);
+  host.appendChild(wrap);
+}
+
+// ============================================================
 // Exhibit 3: Registration + stepped KE1 → KE2 → KE3 login
 // ============================================================
 
 function createExhibit3(): HTMLElement {
   const exhibit = createContainer('Exhibit 3: Registration and the Login Handshake');
+  exhibit.id = 'exhibit-reg';
 
   // ---- Tabs (ARIA Authoring Practices tab pattern) --------------------------
   const tabContainer = document.createElement('div');
@@ -675,11 +1143,15 @@ function createExhibit3(): HTMLElement {
       createByteGrid('client_public_key (→ server)', record.clientPublicKey, { variant: 'wire' })
     );
     result.appendChild(
-      createByteGrid('masking_key (server only)', record.maskingKey, { variant: 'neutral' })
+      createByteGrid('masking_key (server only)', record.maskingKey, {
+        variant: 'neutral',
+        labelHtml: termHtml('masking_key') + ' <span class="grid-hint">(server only)</span>'
+      })
     );
     result.appendChild(
       createByteGrid('envelope (server only)', record.envelope, {
         variant: 'neutral',
+        labelHtml: termHtml('envelope') + ' <span class="grid-hint">(server only)</span>',
         note: 'nonce || HMAC(auth_key, nonce || cleartext_creds) — no password inside'
       })
     );
@@ -744,6 +1216,7 @@ function createExhibit3(): HTMLElement {
   let ke2: AKEMessage2 | null = null;
   let serverState: ServerState | null = null;
   let ke3: AKEMessage3 | null = null;
+  let threeDH: ThreeDHTrace | null = null;
 
   const stepBtn = createButton('Start login →', () => advance());
   const restartBtn = createButton('Restart', () => resetHandshake());
@@ -757,7 +1230,7 @@ function createExhibit3(): HTMLElement {
     col: HTMLElement,
     dir: 'to-server' | 'to-client',
     title: string,
-    contains: Array<{ label: string; bytes?: Uint8Array; text?: string }>,
+    contains: Array<{ label: string; bytes?: Uint8Array; text?: string; labelHtml?: string }>,
     notContains: string[]
   ) => {
     const card = document.createElement('div');
@@ -773,7 +1246,13 @@ function createExhibit3(): HTMLElement {
 
     contains.forEach(item => {
       if (item.bytes) {
-        card.appendChild(createByteGrid(item.label, item.bytes, { variant: 'wire', maxBytes: 16 }));
+        card.appendChild(
+          createByteGrid(item.label, item.bytes, {
+            variant: 'wire',
+            maxBytes: 16,
+            labelHtml: item.labelHtml
+          })
+        );
       } else {
         const line = document.createElement('div');
         line.className = 'msg-line';
@@ -794,8 +1273,10 @@ function createExhibit3(): HTMLElement {
   const resetHandshake = () => {
     phase = 'idle';
     ke1 = clientState = ke2 = serverState = ke3 = null;
+    threeDH = null;
     clientLog.replaceChildren();
     serverLog.replaceChildren();
+    logPanel.querySelectorAll('.threedh-reveal').forEach(el => el.remove());
     stepStatus.textContent = '';
     stepBtn.textContent = 'Start login →';
     stepBtn.disabled = false;
@@ -833,9 +1314,17 @@ function createExhibit3(): HTMLElement {
         'to-server',
         'KE1',
         [
-          { label: 'blinded_message (r·H(pwd))', bytes: ke1.blindedMessage },
+          {
+            label: 'blinded_message',
+            labelHtml: termHtml('blinded_message') + ' <span class="grid-hint">(r·H(pwd))</span>',
+            bytes: ke1.blindedMessage
+          },
           { label: 'client_nonce', bytes: ke1.clientNonce },
-          { label: 'client_keyshare (ephemeral pk)', bytes: ke1.clientKeyshare }
+          {
+            label: 'client_keyshare',
+            labelHtml: termHtml('client_keyshare', 'keyshare') + ' <span class="grid-hint">(ephemeral pk)</span>',
+            bytes: ke1.clientKeyshare
+          }
         ],
         ['the password', 'the unblinded RWD', 'the client static secret key']
       );
@@ -857,11 +1346,27 @@ function createExhibit3(): HTMLElement {
         'to-client',
         'KE2',
         [
-          { label: 'evaluated_message (k·blinded)', bytes: ke2.credentialResponse.evaluatedMessage },
-          { label: 'masked_response (pk||envelope ⊕ pad)', bytes: ke2.credentialResponse.maskedResponse },
+          {
+            label: 'evaluated_message',
+            labelHtml: termHtml('evaluated_message') + ' <span class="grid-hint">(k·blinded)</span>',
+            bytes: ke2.credentialResponse.evaluatedMessage
+          },
+          {
+            label: 'masked_response',
+            labelHtml: termHtml('masked_response') + ' <span class="grid-hint">(pk‖envelope ⊕ pad)</span>',
+            bytes: ke2.credentialResponse.maskedResponse
+          },
           { label: 'server_nonce', bytes: ke2.serverNonce },
-          { label: 'server_keyshare (ephemeral pk)', bytes: ke2.serverKeyshare },
-          { label: 'server_mac', bytes: ke2.serverMac }
+          {
+            label: 'server_keyshare',
+            labelHtml: termHtml('server_keyshare', 'keyshare') + ' <span class="grid-hint">(ephemeral pk)</span>',
+            bytes: ke2.serverKeyshare
+          },
+          {
+            label: 'server_mac',
+            labelHtml: termHtml('server_mac') + ' <span class="grid-hint">(over the ' + termHtml('preamble') + ')</span>',
+            bytes: ke2.serverMac
+          }
         ],
         ['the OPRF key k', 'the server static secret key', 'anything about the password']
       );
@@ -889,7 +1394,8 @@ function createExhibit3(): HTMLElement {
           'Client unblinded the RWD, re-derived its static key, opened the envelope (server MAC verified), and sent its own MAC. One step left: the server checks it.';
         stepBtn.textContent = 'Server verifies KE3 →';
 
-        // Stash session-key material for the final step.
+        // Stash session-key material + the real 3DH trace for the final step.
+        threeDH = r.threeDH;
         (advance as unknown as { _sk?: Uint8Array; _ek?: Uint8Array })._sk = r.sessionKey;
         (advance as unknown as { _sk?: Uint8Array; _ek?: Uint8Array })._ek = r.exportKey;
       } catch (e) {
@@ -921,9 +1427,19 @@ function createExhibit3(): HTMLElement {
         box.appendChild(createByteGrid('session_key (client == server)', finalKey, { variant: 'secret' }));
         if (ek) box.appendChild(createByteGrid('export_key (client only)', ek, { variant: 'secret' }));
         serverLog.appendChild(box);
+
+        // Now unveil the 3DH that produced this session key + mutual auth.
+        if (threeDH) {
+          const dhBox = document.createElement('div');
+          dhBox.className = 'threedh-reveal';
+          dhBox.appendChild(createThreeDHDiagram(threeDH));
+          logPanel.appendChild(dhBox);
+          addForwardSecrecyPoke(dhBox, finalKey);
+        }
+
         phase = 'done';
         stepStatus.textContent =
-          'Server verified the client MAC. Mutual authentication complete; the ephemeral 3DH gives forward secrecy. Press Restart to try the wrong-password path.';
+          'Server verified the client MAC. Mutual authentication complete; the ephemeral 3DH gives forward secrecy. See the 3DH diagram below for how. Press Restart to try the wrong-password path.';
         stepBtn.textContent = 'Done ✓';
         stepBtn.disabled = true;
       } catch (e) {
@@ -934,7 +1450,7 @@ function createExhibit3(): HTMLElement {
   };
 
   // ---- Tab switching -------------------------------------------------------
-  const selectTab = (which: 'reg' | 'log') => {
+  const selectTab = (which: 'reg' | 'log', focusTab = true) => {
     const activeTab = which === 'reg' ? regTab : logTab;
     const inactiveTab = which === 'reg' ? logTab : regTab;
     const activePanel = which === 'reg' ? regPanel : logPanel;
@@ -951,10 +1467,20 @@ function createExhibit3(): HTMLElement {
     activePanel.hidden = false;
     inactivePanel.classList.remove('active');
     inactivePanel.hidden = true;
-    activeTab.focus();
+    if (focusTab) activeTab.focus();
   };
   regTab.onclick = () => selectTab('reg');
   logTab.onclick = () => selectTab('log');
+
+  // The protocol map (Exhibit 0) links to #exhibit-login. Honor that by opening
+  // the LOGIN tab and scrolling the exhibit into view, without stealing focus.
+  const honorLoginHash = () => {
+    if (location.hash === '#exhibit-login') {
+      selectTab('log', false);
+      exhibit.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+  window.addEventListener('hashchange', honorLoginHash);
 
   const onTabKey = (e: KeyboardEvent) => {
     switch (e.key) {
@@ -1171,11 +1697,20 @@ function initApp() {
   // Exhibit 3 registers first in the DOM-independent sense, but visual order is
   // 1..5. Exhibits 1 and 4 subscribe to the shared session, so registering in
   // Exhibit 3 lights them up with real data.
+  main.appendChild(createProtocolMap());
   main.appendChild(createExhibit1());
   main.appendChild(createExhibit2());
   main.appendChild(createExhibit3());
   main.appendChild(createExhibit4());
   main.appendChild(createExhibit5());
+
+  // Delegated toggle for every inline tappable jargon term across the exhibits.
+  wireTerms(main);
+
+  // If the page loaded already pointing at the login tab, honor it after render.
+  if (location.hash === '#exhibit-login') {
+    window.dispatchEvent(new HashChangeEvent('hashchange'));
+  }
 
   footer.innerHTML = `
     <p>Related demos:
