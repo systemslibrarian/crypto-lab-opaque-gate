@@ -44,7 +44,7 @@ The demo simulates both client and server in one browser. It opens with a clicka
 
 ## Real-World Usage
 
-- **RFC 9807** was published by the IRTF Crypto Forum Research Group in July 2025. Authors: Hugo Krawczyk (AWS; also designed HMAC, HKDF, Noise, IKE), Kevin Lewi (Meta, WhatsApp E2E Encrypted Backups), Christopher Wood (Cloudflare), and Stanislaw Jarecki (UC Irvine).
+- **RFC 9807** was published by the IRTF Crypto Forum Research Group in July 2025. Authors: Daniel Bourdrez, Hugo Krawczyk (AWS; also co-designed HMAC, HKDF, IKE and SIGMA), Kevin Lewi (Meta, WhatsApp E2E Encrypted Backups), and Christopher Wood (Cloudflare). The underlying OPAQUE construction is due to Jarecki, Krawczyk and Xu (EUROCRYPT 2018).
 - **WhatsApp** (2021+): End-to-End Encrypted Backups for 300M+ users use an OPAQUE-based construction.
 - **Cloudflare Zero Trust**: Exploring OPAQUE for passwordless authentication.
 - **Apple Private Cloud Compute**: Uses related OPRF constructions for privacy-preserving authentication.
@@ -266,5 +266,7 @@ the server.
 `cryptography` `pake` `opaque` `password-authentication` `oprf` `authenticated-key-exchange` `3dh` `forward-secrecy` `browser-demo` `educational` `typescript` `vite` `rfc9807` `library-auth` `patron-privacy`
 
 ---
+
+*One of 170+ browser demos in the [Crypto Lab](https://crypto-lab.systemslibrarian.dev/) suite.*
 
 *"So whether you eat or drink or whatever you do, do it all for the glory of God." — 1 Corinthians 10:31*
