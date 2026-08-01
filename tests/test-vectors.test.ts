@@ -1,5 +1,5 @@
 /**
- * RFC 9807 §C.1 P256-SHA256 internal-mode test vector validation.
+ * RFC 9807 Appendix C.1 P256-SHA256 internal-mode test vector validation.
  *
  * The vector comes from the CFRG OPAQUE reference repo
  * (poc/vectors/vectors.json). It uses the Identity Stretch (KSF) so the
@@ -40,7 +40,7 @@ import {
 } from '../src/ake';
 
 // ============================================================
-// Vector (RFC 9807 §C P256-SHA256 internal, identity KSF)
+// Vector (RFC 9807 Appendix C P256-SHA256 internal, identity KSF)
 // ============================================================
 
 function hex(s: string): Uint8Array {
@@ -126,7 +126,7 @@ function expectBytes(actual: Uint8Array, expected: Uint8Array): void {
   expect(toHex(actual)).toBe(toHex(expected));
 }
 
-describe('RFC 9807 §C P256-SHA256 Real vector (17 byte-for-byte checks)', () => {
+describe('RFC 9807 Appendix C P256-SHA256 Real vector (16 byte-for-byte checks)', () => {
   it('matches every intermediate and output of the CFRG vector', async () => {
     const password = new TextDecoder().decode(V.password);
 
@@ -234,7 +234,7 @@ describe('RFC 9807 §C P256-SHA256 Real vector (17 byte-for-byte checks)', () =>
 });
 
 // ============================================================
-// Fake-login vector (RFC 9807 §6.1.2)
+// Fake-login vector (RFC 9807 Appendix C.2; the fabrication rule is §6.3.2.2)
 //
 // When the server has no record for credential_identifier, it fabricates
 // one indistinguishable from a real failed login:
@@ -264,7 +264,7 @@ const VF = {
   KE2: hex('0201198dcd13f9792eb75dcfa815f61b049abfe2e3e9456d4bbbceec5f442efd049c035896a043e70f897d87180c543e7a063b83c1bb728fbd189c619e27b6e5a6facda65ce0a97b9085e7af07f61fd3fdd046d257cbf2183ce8766090b8041a8bf28d79dd4c9031ddc75bb6ddb4c291e639937840e3d39fc0d5a3d6e7723c09f7945df485bcf9aefe3fe82d149e84049e259bb5b33d6a2ff3b25e4bfb7eff0962821e10f6eeab2a7a420bf09da9b27a4639645622c46358de9cf7ae813055ae2d12023f82bbb24e75b8683fd13b843cd566efae996cd0016cffdcc24ee2bc937d026f80144878749a69565b433c1040aff67e94f79345de888a877422b9bbe21ec329')
 };
 
-describe('RFC 9807 §6.1.2 P256-SHA256 Fake-login vector (1 byte-for-byte check)', () => {
+describe('RFC 9807 Appendix C.2 P256-SHA256 Fake-login vector (1 byte-for-byte check)', () => {
   it('reproduces the fabricated KE2 for an unknown credential', async () => {
     // Derive the per-user OPRF key just like in the real flow.
     const fakeOprfKey = deriveOprfKey(VF.oprf_seed, VF.credential_identifier);

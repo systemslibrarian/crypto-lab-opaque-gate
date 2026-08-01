@@ -70,7 +70,7 @@ export interface StoreResult {
 }
 
 /**
- * CleartextCredentials per RFC 9807 §4.1.4.
+ * CleartextCredentials per RFC 9807 §4.
  *
  *   server_public_key                       (Npk bytes, compressed)
  *   I2OSP(len(server_identity), 2) || server_identity
@@ -92,7 +92,7 @@ export function createCleartextCredentials(
 }
 
 /**
- * Server-side OPRF key derivation per RFC 9807 §5.2.
+ * Server-side OPRF key derivation per RFC 9807 §5.2.2 (CreateRegistrationResponse).
  *
  *   ikm     = HKDF-Expand(oprf_seed, credential_identifier || "OprfKey", Nok)
  *   oprfKey = DeriveKeyPair(ikm, "OPAQUE-DeriveKeyPair").secretKey
@@ -110,7 +110,7 @@ export function deriveOprfKey(
 }
 
 /**
- * Store — RFC 9807 §4.3. Builds the envelope and returns everything the
+ * Store — RFC 9807 §4.1.2 (Envelope Creation). Builds the envelope and returns everything the
  * client needs to keep (export_key) plus what the server gets (masking_key,
  * envelope, client_public_key).
  *
@@ -160,7 +160,7 @@ export function store(
 }
 
 /**
- * Recover — RFC 9807 §4.4. Throws `EnvelopeRecoveryError` on MAC mismatch.
+ * Recover — RFC 9807 §4.1.3 (Envelope Recovery). Throws `EnvelopeRecoveryError` on MAC mismatch.
  */
 export function recover(
   randomizedPwd: Uint8Array,

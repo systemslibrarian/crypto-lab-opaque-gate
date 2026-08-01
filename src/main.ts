@@ -14,9 +14,17 @@
  */
 
 import { p256 } from '@noble/curves/nist.js';
-import { generateOprfKey, oprfClientBlind, oprfServerEvaluate, oprfClientUnblind } from './oprf';
-import { register, RegistrationRecord } from './envelope';
-import { stretchScrypt } from './kdf';
+import {
+  generateOprfKey,
+  oprfClientBlind,
+  oprfServerEvaluate,
+  oprfClientUnblind,
+  oprfBlind,
+  oprfBlindEvaluate,
+  oprfFinalize
+} from './oprf';
+import { register, recover, RegistrationRecord } from './envelope';
+import { stretchScrypt, deriveRandomizedPassword } from './kdf';
 import {
   clientLoginStep1,
   serverLoginStep2,
@@ -1512,8 +1520,108 @@ function createExhibit3(): HTMLElement {
 }
 
 // ============================================================
-// Exhibit 4: Server Database Breach — grounded in real data
+// Exhibit 4: Server Database Breach — the attacks actually run
 // ============================================================
+
+/**
+ * Everything a breach hands the attacker, and nothing else: the server's
+ * per-user record (client_public_key, masking_key, envelope, oprf_key) plus
+ * the server's own public key. Deliberately does NOT carry the password or
+ * the server's private key — if an attack in here needed either, it would
+ * fail to compile, which is the point.
+ */
+interface StolenRecord {
+  record: RegistrationRecord;
+  serverPublic: Uint8Array;
+  username: string;
+}
+
+/**
+ * One offline password guess, run for real: OPRF-evaluate the candidate with
+ * the stolen per-user OPRF key, derive randomized_password (including the
+ * scrypt stretch), then try to open the envelope. `recover()` throws on MAC
+ * mismatch, so a returned `true` means the envelope genuinely opened.
+ */
+function tryOfflineGuess(stolen: StolenRecord, candidate: string): boolean {
+  const bytes = new TextEncoder().encode(candidate);
+  const { blind, blinded } = oprfBlind(bytes);
+  const evaluated = oprfBlindEvaluate(stolen.record.oprfKey, blinded);
+  const oprfOutput = oprfFinalize(bytes, blind, evaluated);
+  const randomizedPwd = deriveRandomizedPassword(oprfOutput, stretchScrypt);
+  try {
+    recover(
+      randomizedPwd,
+      stolen.serverPublic,
+      stolen.record.envelope,
+      new Uint8Array(0),
+      new TextEncoder().encode(stolen.username)
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Attack 1: open the envelope without the password. Uses random RWD bytes. */
+function attackWithoutPassword(stolen: StolenRecord): { opened: boolean; error: string } {
+  const guessedRwd = crypto.getRandomValues(new Uint8Array(32));
+  try {
+    recover(
+      guessedRwd,
+      stolen.serverPublic,
+      stolen.record.envelope,
+      new Uint8Array(0),
+      new TextEncoder().encode(stolen.username)
+    );
+    return { opened: true, error: '' };
+  } catch (e) {
+    return { opened: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+/**
+ * Attack 3: is a table built against one user's OPRF key reusable against
+ * another's? Evaluate the *same* password under the stolen key and under a
+ * different user's key and compare the OPRF outputs.
+ */
+function attackPrecomputation(
+  stolen: StolenRecord,
+  password: string
+): { sameKeyOut: Uint8Array; otherKeyOut: Uint8Array; reusable: boolean } {
+  const bytes = new TextEncoder().encode(password);
+  const evalUnder = (key: Uint8Array): Uint8Array => {
+    const { blind, blinded } = oprfBlind(bytes);
+    return oprfFinalize(bytes, blind, oprfBlindEvaluate(key, blinded));
+  };
+  const sameKeyOut = evalUnder(stolen.record.oprfKey);
+  const otherKeyOut = evalUnder(generateOprfKey().oprfPrivate);
+  const reusable =
+    sameKeyOut.byteLength === otherKeyOut.byteLength &&
+    sameKeyOut.every((b, i) => b === otherKeyOut[i]);
+  return { sameKeyOut, otherKeyOut, reusable };
+}
+
+/**
+ * Attack 4: impersonate the server on the next login using only the breached
+ * record. The attacker has no server static private key, so it substitutes its
+ * own keypair and runs a genuine KE2. The victim's real client code then runs
+ * `clientLoginStep3`; whether that throws is the verdict.
+ */
+async function attackServerImpersonation(
+  stolen: StolenRecord,
+  password: string
+): Promise<{ accepted: boolean; error: string }> {
+  const forged = p256.utils.randomSecretKey();
+  const forgedPub = p256.getPublicKey(forged, true);
+  const { ke1, clientState } = await clientLoginStep1(password, stolen.username);
+  const { ke2 } = await serverLoginStep2(ke1, stolen.record, forged, forgedPub);
+  try {
+    await clientLoginStep3(ke2, clientState);
+    return { accepted: true, error: '' };
+  } catch (e) {
+    return { accepted: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
 
 function createExhibit4(): HTMLElement {
   const exhibit = createContainer('Exhibit 4: Server Database Breach');
@@ -1521,9 +1629,11 @@ function createExhibit4(): HTMLElement {
   const intro = document.createElement('p');
   intro.innerHTML =
     'Suppose the attacker steals the entire server record for a user and also the ' +
-    "server's OPRF key. What can they actually do? These attacks run against the " +
-    '<strong>envelope you registered in Exhibit 3</strong>, and the cost number below is ' +
-    "measured live from this browser's real scrypt, not a canned figure.";
+    "server's OPRF key. What can they actually do? Every verdict below is the " +
+    'result of <strong>running the attack</strong> against the envelope you registered in ' +
+    'Exhibit 3 — the offline guesses call the same <code>recover()</code> the real client ' +
+    'calls, and the timings come from this browser. Nothing here is a canned answer: if ' +
+    'an attack succeeded, this panel would say so.';
   exhibit.appendChild(intro);
 
   const host = document.createElement('div');
@@ -1533,65 +1643,147 @@ function createExhibit4(): HTMLElement {
     const s = demoSession;
     const analysis = createStatusRegion('breach-analysis');
 
-    // Measure the REAL stretch cost used in the code (scrypt N=2^15).
-    btn.textContent = 'Measuring real scrypt cost…';
-    const samples = 3;
-    const t0 = performance.now();
-    for (let i = 0; i < samples; i++) {
-      stretchScrypt(new Uint8Array([i & 0xff, 1, 2, 3, 4]));
+    if (!s) {
+      analysis.innerHTML = `
+        <p class="ground-note">No envelope to attack yet. Register in
+        <strong>Exhibit 3</strong> first — these attacks run against a real record, so
+        there is nothing honest to show until one exists.</p>`;
+      host.replaceChildren(analysis);
+      return;
     }
-    const perOpMs = (performance.now() - t0) / samples;
-    const perSec = 1000 / perOpMs;
-    btn.textContent = 'Analyze breach';
 
-    const envLine = s
-      ? `Target: your envelope <code>${bytesToHex(s.record.envelope, 10)}</code> for user "${escapeHtml(
-          s.username
-        )}".`
-      : 'Target: register in Exhibit 3 first to attack your own envelope; showing the general argument meanwhile.';
+    const stolen: StolenRecord = {
+      record: s.record,
+      serverPublic: s.serverPublic,
+      username: s.username
+    };
+
+    btn.textContent = 'Running the attacks…';
+    analysis.innerHTML = '<p class="ground-note">Running…</p>';
+    host.replaceChildren(analysis);
+    // Yield so the "running" state paints before the scrypt work blocks the thread.
+    await new Promise(r => setTimeout(r, 0));
+
+    // --- Attack 1: open the envelope with no password at all ---
+    const a1 = attackWithoutPassword(stolen);
+
+    // --- Attack 2: a real offline dictionary attack. The true password is put
+    // LAST so the wrong guesses are genuinely tried and genuinely rejected. ---
+    const wrongGuesses = ['password', '123456', 'letmein', 'library'].filter(
+      g => g !== s.password
+    );
+    const dictionary = [...wrongGuesses, s.password];
+    const t0 = performance.now();
+    const results = dictionary.map(c => ({ candidate: c, hit: tryOfflineGuess(stolen, c) }));
+    const elapsedMs = performance.now() - t0;
+    const perOpMs = elapsedMs / dictionary.length;
+    const perSec = 1000 / perOpMs;
+    const hits = results.filter(r => r.hit);
+    const cracked = hits.length === 1 && hits[0].candidate === s.password;
+
+    // --- Attack 3: is the per-user OPRF key actually per-user? ---
+    const a3 = attackPrecomputation(stolen, s.password);
+
+    // --- Attack 4: forge a server using only the breached record ---
+    const a4 = await attackServerImpersonation(stolen, s.password);
+
+    btn.textContent = 'Re-run the attacks';
+
+    const guessRows = results
+      .map(
+        r =>
+          `<li><code>${escapeHtml(r.candidate)}</code> — ${
+            r.hit
+              ? '<strong>envelope opened</strong>'
+              : 'MAC mismatch, rejected'
+          }</li>`
+      )
+      .join('');
 
     analysis.innerHTML = `
-      <p class="ground-note">${envLine}</p>
-      <div class="attack-scenario attack-blocked">
-        <strong>Attack 1 — decrypt the envelope directly</strong>
-        <span>The client static key is <em>derived</em> from the RWD, and the envelope is
-        an HMAC under <code>auth_key = HKDF-Expand(RWD, nonce||"AuthKey")</code>. No RWD,
-        no auth_key, no open.</span>
-        <span class="breach-verdict"><span aria-hidden="true">✗</span> Blocked — RWD needs the password.</span>
+      <p class="ground-note">Target: your envelope <code>${bytesToHex(
+        s.record.envelope,
+        10
+      )}</code> for user "${escapeHtml(s.username)}".</p>
+
+      <div class="attack-scenario ${a1.opened ? 'attack-warn' : 'attack-blocked'}">
+        <strong>Attack 1 — open the envelope with no password</strong>
+        <span>Called <code>recover()</code> with 32 random bytes standing in for the RWD.
+        The client static key is <em>derived</em> from the RWD and the envelope is an HMAC
+        under <code>auth_key = HKDF-Expand(RWD, nonce||"AuthKey")</code>, so a wrong RWD
+        produces a wrong tag.</span>
+        <span class="breach-verdict">${
+          a1.opened
+            ? '<span aria-hidden="true">⚠</span> IT OPENED — the envelope is not binding the RWD'
+            : `<span aria-hidden="true">✗</span> Blocked — <code>${escapeHtml(
+                a1.error
+              )}</code>`
+        }</span>
       </div>
-      <div class="attack-scenario attack-warn">
+
+      <div class="attack-scenario ${cracked ? 'attack-warn' : 'attack-blocked'}">
         <strong>Attack 2 — offline dictionary attack (with the stolen OPRF key)</strong>
-        <span>For each guess <code>pwd'</code>: evaluate the OPRF locally, then
-        <code>randomized_pwd' = HKDF-Extract("", z || scrypt(z))</code> where
-        <code>z = OPRF(pwd')</code>, then test the envelope MAC. The gate is that
-        <code>scrypt</code> stretch — measured just now at
-        <strong>${perOpMs.toFixed(0)} ms/guess ≈ ${perSec.toFixed(0)} guesses/sec</strong>
-        single-threaded on this machine (scrypt N=2¹⁵, r=8).</span>
-        <span class="breach-verdict"><span aria-hidden="true">⚠</span> Possible but throttled —
-        a strong password is out of reach; a weak one is not (same story as bcrypt/scrypt).</span>
+        <span>Each candidate was run all the way through: OPRF-evaluate under the stolen
+        per-user key, <code>randomized_pwd' = HKDF-Extract("", z || scrypt(z))</code>, then
+        <code>recover()</code> against your envelope.</span>
+        <ul style="margin:0.4rem 0 0.4rem 1.2rem;line-height:1.7">${guessRows}</ul>
+        <span>${dictionary.length} guesses took <strong>${elapsedMs.toFixed(
+          0
+        )} ms</strong> — <strong>${perOpMs.toFixed(0)} ms/guess &asymp; ${perSec.toFixed(
+          1
+        )} guesses/sec</strong> single-threaded here (scrypt N=2¹⁵, r=8). That rate, not any
+        quoted figure, is the whole defence.</span>
+        <span class="breach-verdict">${
+          cracked
+            ? '<span aria-hidden="true">⚠</span> Possible — the right guess opened it, the wrong ones did not. A weak password falls; a strong one is out of reach at this rate.'
+            : '<span aria-hidden="true">✗</span> No candidate opened the envelope in this run.'
+        }</span>
       </div>
-      <div class="attack-scenario attack-blocked">
-        <strong>Attack 3 — precomputed rainbow tables</strong>
-        <span>The OPRF key is <em>per user</em>. A table built for one user's key is
-        worthless against another's, and it can't be built <em>before</em> the breach.</span>
-        <span class="breach-verdict"><span aria-hidden="true">✓</span> Impossible — no cross-user or pre-breach precomputation.</span>
+
+      <div class="attack-scenario ${a3.reusable ? 'attack-warn' : 'attack-blocked'}">
+        <strong>Attack 3 — reuse a precomputed table across users</strong>
+        <span>Evaluated the <em>same</em> password under the stolen OPRF key and under a
+        different user's freshly generated OPRF key:<br />
+        <code>${bytesToHex(a3.sameKeyOut, 12)}</code><br />
+        <code>${bytesToHex(a3.otherKeyOut, 12)}</code></span>
+        <span class="breach-verdict">${
+          a3.reusable
+            ? '<span aria-hidden="true">⚠</span> Same output — a table WOULD transfer between users'
+            : '<span aria-hidden="true">✓</span> Different outputs — a table built for one user is worthless against another, and neither can be built before the breach hands over a key.'
+        }</span>
       </div>
-      <div class="attack-scenario attack-warn">
+
+      <div class="attack-scenario ${a4.accepted ? 'attack-warn' : 'attack-blocked'}">
         <strong>Attack 4 — impersonate the server on the next login</strong>
-        <span>KE2's <code>server_mac</code> and the 3DH need the server's static private
-        key; the client's <code>clientLoginStep3</code> aborts on a bad server MAC.</span>
-        <span class="breach-verdict"><span aria-hidden="true">⚠</span> Needs the server static key too — envelope alone is not enough.</span>
+        <span>Ran a genuine KE2 from the stolen record using an attacker-generated static
+        keypair (the server's real static private key was not breached), then handed it to
+        the victim's real <code>clientLoginStep3</code>. Two things can catch it — the
+        forged server public key is bound into <code>cleartext_creds</code>, so the envelope
+        MAC fails, and the 3DH needs the real static key, so <code>server_mac</code> fails.
+        The error below names whichever fired first.</span>
+        <span class="breach-verdict">${
+          a4.accepted
+            ? '<span aria-hidden="true">⚠</span> THE CLIENT ACCEPTED IT — server authentication is broken'
+            : `<span aria-hidden="true">✗</span> Client aborted — <code>${escapeHtml(
+                a4.error
+              )}</code>`
+        }</span>
       </div>
-      <p class="ground-note">Notation note: this matches the code exactly — the stretch is
-      <code>scrypt</code>, not the illustrative <code>k·H(pwd')</code> shorthand. "~100M hash
-      ops" is a rule-of-thumb for bcrypt cost-10; here the honest, measured gate is the
-      per-guess scrypt time shown above.</p>
+
+      <p class="ground-note">The stretch is real <code>scrypt</code>, not the illustrative
+      <code>k·H(pwd')</code> shorthand, and the per-guess cost above was measured by
+      actually making the guesses. Production should raise the KSF cost well above the
+      N=2¹⁵ used here to keep the demo responsive.</p>
     `;
     host.replaceChildren(analysis);
   };
 
   const btn = createButton('Analyze breach', () => render(btn));
   exhibit.appendChild(btn);
+  onDemoSession(session => {
+    btn.disabled = !session;
+    btn.title = session ? '' : 'Register in Exhibit 3 first';
+  });
   return exhibit;
 }
 
@@ -1608,16 +1800,19 @@ function createExhibit5(): HTMLElement {
     <div class="deployment">
       <strong>WhatsApp (2021+)</strong><br />
       End-to-End Encrypted Backups<br />
-      300M+ users, OPAQUE-based construction
+      Password-gated key retrieval from an HSM-backed Backup Key Vault. Meta's public
+      write-up describes the design but does not name OPAQUE; RFC 9807 co-author
+      Kevin Lewi is at Meta.
     </div>
     <div class="deployment">
-      <strong>Cloudflare Zero Trust</strong><br />
-      Passwordless authentication research<br />
-      Eliminates credential stuffing surface
+      <strong>Cloudflare</strong><br />
+      Published OPAQUE research and a public demo<br />
+      Not a shipped production login path
     </div>
     <div class="deployment">
       <strong>Apple Private Cloud Compute</strong><br />
-      OPRF-based privacy constructions
+      A neighbour, not an example: PCC authorizes requests with single-use
+      RSA Blind Signatures (RFC 9474), not an OPRF
     </div>
     <div class="deployment">
       <strong>1Password</strong><br />

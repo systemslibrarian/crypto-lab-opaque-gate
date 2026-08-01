@@ -1,7 +1,7 @@
 /**
  * Primitives for RFC 9807 OPAQUE on the P256-SHA256 ciphersuite.
  *
- *   Suite parameters (RFC 9807 §6.4):
+ *   Suite parameters (RFC 9807 §2 and the P256-SHA256 row of §7):
  *     Nh   = 32  SHA-256 output length
  *     Nm   = 32  HMAC-SHA-256 tag length
  *     Nn   = 32  nonce length
@@ -123,10 +123,11 @@ export function deriveSecret(
 
 /**
  * Key-stretching function applied to the OPRF output before deriving credentials.
- * RFC 9807 §4.1 says implementers should pick a memory-hard KSF.
+ * The KSF is a suite parameter (RFC 9807 §2.3); §10.8 "OPRF Key Stretching" is
+ * where the spec argues for a memory-hard one.
  *
  * The library demos run with `stretchScrypt` (memory-hard, snappy at N=2^15).
- * The `Identity` stretch is the no-op KSF — used in RFC 9807 §C test vectors
+ * The `Identity` stretch is the no-op KSF — used in the RFC 9807 Appendix C test vectors
  * and in protocol-debugging contexts. Production deployments should bump scrypt
  * N to 2^17 (OWASP 2023) or swap in Argon2id.
  */

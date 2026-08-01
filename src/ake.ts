@@ -1,18 +1,23 @@
 /**
  * OPAQUE-3DH AKE (RFC 9807 §6, internal mode, P256-SHA256).
  *
- * Preamble (RFC 9807 §6.3):
+ * Preamble (RFC 9807 §6.4.2.1):
  *
  *   preamble = "OPAQUEv1-" ||
  *              I2OSP(len(context), 2)        || context ||
  *              I2OSP(len(client_identity), 2)|| client_identity ||
  *              serialize(ke1) ||
- *              serialize(credential_response) ||
  *              I2OSP(len(server_identity), 2)|| server_identity ||
+ *              serialize(credential_response) ||
  *              server_nonce ||
  *              server_keyshare
  *
- * Key schedule (RFC 9807 §6.4.4):
+ * Field order matters and is easy to write backwards: server_identity comes
+ * BEFORE credential_response. buildPreamble() below has always had it right —
+ * the Appendix C known-answer tests would not pass otherwise — but this comment
+ * had the two swapped, so it described a protocol the file does not implement.
+ *
+ * Key schedule (RFC 9807 §6.4.2, Key Schedule Functions):
  *
  *   ikm  = dh1 || dh2 || dh3
  *           dh1 = DH(client_eph_sk, server_eph_pk)    // eph × eph
@@ -170,7 +175,7 @@ function buildPreamble(args: {
 }
 
 // ============================================================
-// Credential response masking (RFC 9807 §6.2)
+// Credential response masking (RFC 9807 §6.3.2.2, CreateCredentialResponse)
 // ============================================================
 
 function maskResponse(
@@ -346,7 +351,7 @@ serverKeyshare = p256.getPublicKey(serverEphemeralPrivate, true);
     serverKeyshare = kp.publicKey;
   }
 
-  // 4. 3DH per RFC 9807 §6.4.4.
+  // 4. 3DH per RFC 9807 §6.4.4 (3DH Server Functions).
   const dh1 = dh(serverEphemeralPrivate, ke1.clientKeyshare);
   const dh2 = dh(serverPrivateKey, ke1.clientKeyshare);
   const dh3 = dh(serverEphemeralPrivate, record.clientPublicKey);
@@ -399,7 +404,7 @@ serverKeyshare = p256.getPublicKey(serverEphemeralPrivate, true);
 /**
  * The three Diffie-Hellman shared secrets and the four public keys that feed
  * them, surfaced for visualization. These are the *real* values computed during
- * the client's 3DH (§6.4.4) — nothing here is faked; the exhibit only draws
+ * the client's 3DH (§6.4.3) — nothing here is faked; the exhibit only draws
  * what login already produced.
  */
 export interface ThreeDHTrace {
