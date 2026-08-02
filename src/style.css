@@ -21,6 +21,9 @@
   --color-gold: #ffd700;
   --color-amber: #ffaa00;
   --color-border: #2a3a4a;
+  /* Text-entry control boundaries: >= 3:1 vs both the field fill and the
+     surrounding surface (WCAG 1.4.11). Decorative borders stay subtle. */
+  --color-border-control: #557088;
   --color-shadow: rgba(0, 0, 0, 0.5);
   --color-overlay: rgba(0, 0, 0, 0.3);
   --color-focus: #ffd700;
@@ -39,6 +42,7 @@
   --color-gold: #7a5e00;
   --color-amber: #7a5500;
   --color-border: #b8bdc4;
+  --color-border-control: #6e747c;
   --color-shadow: rgba(0, 0, 0, 0.1);
   --color-overlay: rgba(0, 0, 0, 0.04);
   --color-focus: #0052a3;
@@ -288,7 +292,7 @@ input[type='password'] {
   padding: 0.75rem;
   margin: 0.5rem 0 1rem 0;
   background: var(--color-bg);
-  border: 2px solid var(--color-border);
+  border: 2px solid var(--color-border-control);
   border-radius: 4px;
   color: var(--color-text);
   font-size: 1rem;
