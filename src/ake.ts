@@ -210,6 +210,34 @@ function unmaskResponse(
 }
 
 // ============================================================
+// Key schedule (RFC 9807 §6.4.2)
+// ============================================================
+
+export interface KeySchedule {
+  prk: Uint8Array;
+  handshakeSecret: Uint8Array;
+  sessionKey: Uint8Array;
+}
+
+/**
+ * The RFC 9807 §6.4.2 key schedule, factored out of the client and server so
+ * there is exactly one implementation of it.
+ *
+ * Exporting it is what lets the forward-secrecy exhibit *measure* rather than
+ * assert: the exhibit re-runs this same schedule over an attacker's own
+ * reconstruction of the ikm and compares the result, byte for byte, against
+ * the key the real handshake produced.
+ */
+export function keySchedule(ikm: Uint8Array, preambleHash: Uint8Array): KeySchedule {
+  const prk = extract(new Uint8Array(0), ikm);
+  return {
+    prk,
+    handshakeSecret: deriveSecret(prk, 'HandshakeSecret', preambleHash),
+    sessionKey: deriveSecret(prk, 'SessionKey', preambleHash)
+  };
+}
+
+// ============================================================
 // Helper for deterministic-key injection
 // ============================================================
 
@@ -373,9 +401,7 @@ serverKeyshare = p256.getPublicKey(serverEphemeralPrivate, true);
   });
   const preambleHash = hash(preamble);
 
-  const prk = extract(new Uint8Array(0), ikm);
-  const handshakeSecret = deriveSecret(prk, 'HandshakeSecret', preambleHash);
-  const sessionKey = deriveSecret(prk, 'SessionKey', preambleHash);
+  const { handshakeSecret, sessionKey } = keySchedule(ikm, preambleHash);
 
   const km2 = expandLabel(handshakeSecret, 'ServerMAC', new Uint8Array(0), Nh);
   const km3 = expandLabel(handshakeSecret, 'ClientMAC', new Uint8Array(0), Nh);
@@ -415,6 +441,22 @@ export interface ThreeDHTrace {
   dh1: Uint8Array; // client_eph × server_eph  → forward secrecy
   dh2: Uint8Array; // client_eph × server_static → authenticates the server
   dh3: Uint8Array; // client_static × server_eph → authenticates the client
+  /**
+   * H(preamble). The preamble is built entirely from values that travel on the
+   * wire, so a passive recorder of the login can compute this hash too — which
+   * is exactly why the forward-secrecy exhibit is allowed to hand it to the
+   * simulated attacker.
+   */
+  preambleHash: Uint8Array;
+  /**
+   * The client's recovered *long-term* secret key.
+   *
+   * Surfaced only so the forward-secrecy exhibit can simulate a full long-term
+   * compromise — attacker steals both static secret keys — and then compute,
+   * rather than assert, what such an attacker can and cannot derive. Real
+   * client code has no reason to export this.
+   */
+  clientStaticPrivate: Uint8Array;
 }
 
 export async function clientLoginStep3(
@@ -474,9 +516,7 @@ export async function clientLoginStep3(
   });
   const preambleHash = hash(preamble);
 
-  const prk = extract(new Uint8Array(0), ikm);
-  const handshakeSecret = deriveSecret(prk, 'HandshakeSecret', preambleHash);
-  const sessionKey = deriveSecret(prk, 'SessionKey', preambleHash);
+  const { handshakeSecret, sessionKey } = keySchedule(ikm, preambleHash);
 
   const km2 = expandLabel(handshakeSecret, 'ServerMAC', new Uint8Array(0), Nh);
   const km3 = expandLabel(handshakeSecret, 'ClientMAC', new Uint8Array(0), Nh);
@@ -499,7 +539,9 @@ export async function clientLoginStep3(
       serverStaticPublic: serverPublicKey,
       dh1,
       dh2,
-      dh3
+      dh3,
+      preambleHash,
+      clientStaticPrivate: clientPrivateKey
     }
   };
 }

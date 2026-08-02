@@ -233,6 +233,52 @@ export function dh(scalar: Uint8Array, peerPoint: Uint8Array): Uint8Array {
   return p256.getSharedSecret(scalar, peerPoint, true);
 }
 
+/**
+ * AES-256-GCM under a 32-byte session key.
+ *
+ * The forward-secrecy exhibit uses this to turn "can the attacker decrypt
+ * this?" into a *measurement* rather than a claim: traffic is sealed with the
+ * real session key, and opening is then attempted with whatever key the
+ * attacker actually managed to derive. A GCM tag either verifies or it does
+ * not, so the exhibit reports an outcome it observed instead of prose.
+ */
+export async function aeadSeal(
+  key: Uint8Array,
+  nonce: Uint8Array,
+  plaintext: Uint8Array
+): Promise<Uint8Array> {
+  const k = await crypto.subtle.importKey('raw', key as BufferSource, 'AES-GCM', false, [
+    'encrypt'
+  ]);
+  const ct = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv: nonce as BufferSource },
+    k,
+    plaintext as BufferSource
+  );
+  return new Uint8Array(ct);
+}
+
+/** Open an {@link aeadSeal} ciphertext. Returns null when the tag fails. */
+export async function aeadOpen(
+  key: Uint8Array,
+  nonce: Uint8Array,
+  ciphertext: Uint8Array
+): Promise<Uint8Array | null> {
+  try {
+    const k = await crypto.subtle.importKey('raw', key as BufferSource, 'AES-GCM', false, [
+      'decrypt'
+    ]);
+    const pt = await crypto.subtle.decrypt(
+      { name: 'AES-GCM', iv: nonce as BufferSource },
+      k,
+      ciphertext as BufferSource
+    );
+    return new Uint8Array(pt);
+  } catch {
+    return null;
+  }
+}
+
 /** Generate a fresh ephemeral P-256 keypair (compressed public). */
 export function generateKeyPair(): {
   secretKey: Uint8Array;

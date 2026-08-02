@@ -1544,6 +1544,18 @@ a.map-link:focus-visible {
   font-weight: bold;
 }
 
+.fs-pending,
+.fs-verdict,
+.fs-caveat {
+  font-size: 0.88rem;
+  margin-top: 0.75rem !important;
+}
+
+.fs-verdict code {
+  color: var(--color-accent);
+  font-family: 'Courier New', monospace;
+}
+
 /* ============================================================
    Print styles
    ============================================================ */

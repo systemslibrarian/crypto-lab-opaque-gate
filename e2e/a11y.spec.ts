@@ -141,3 +141,32 @@ test('no WCAG A/AA violations in light theme', async ({ page }) => {
   await revealAll(page);
   await scan(page);
 });
+
+/**
+ * The forward-secrecy measurement table only exists after a full registration +
+ * login + attack run, so revealAll() alone never sees it. Drive the flow, then
+ * scan the rendered results in both themes.
+ */
+for (const theme of ['dark', 'light'] as const) {
+  test(`no WCAG A/AA violations in the forward-secrecy results (${theme} theme)`, async ({
+    page,
+  }) => {
+    test.setTimeout(180000);
+    await page.goto('.');
+    if (theme === 'light') {
+      await page.locator('#cl-theme-toggle').click();
+      await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+    }
+    await page.getByRole('button', { name: 'Register' }).first().click();
+    await expect(page.locator('.reg-result')).toBeVisible({ timeout: 60000 });
+    await page.getByRole('tab', { name: 'LOGIN' }).click();
+    for (const step of [/^Start login/, /^Send KE2/, /^Send KE3/, /^Server verifies/]) {
+      await page.getByRole('button', { name: step }).click();
+      await expect(page.getByRole('button', { name: step })).toHaveCount(0, { timeout: 60000 });
+    }
+    await page.getByRole('button', { name: /run the attack/i }).click();
+    await expect(page.locator('.fs-verdict')).toBeVisible({ timeout: 120000 });
+    await revealAll(page);
+    await scan(page);
+  });
+}

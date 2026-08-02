@@ -20,8 +20,10 @@ import {
   clientLoginStep1,
   serverLoginStep2,
   clientLoginStep3,
-  serverFinalize
+  serverFinalize,
+  keySchedule
 } from '../src/ake';
+import { concat, dh } from '../src/kdf';
 
 function bytesToHex(bytes: Uint8Array, max = 16): string {
   return Array.from(bytes)
@@ -202,5 +204,78 @@ describe('RFC 9807 OPAQUE protocol properties (10 checks)', () => {
     const a = await runFullLogin('pwfs', 'user-fs-a');
     const b = await runFullLogin('pwfs', 'user-fs-b');
     expect(bytesEqual(a.clientKey, b.clientKey)).toBe(false);
+  });
+
+  /**
+   * The forward-secrecy exhibit's arithmetic, unit-tested away from the DOM.
+   *
+   * An attacker who steals *both* long-term secret keys and holds the recorded
+   * transcript rebuilds dh2 and dh3 exactly — and still not the session key,
+   * because dh1 needed two ephemeral private keys that no longer exist.
+   */
+  it('11. Long-term compromise recovers dh2 and dh3 but not the session key', async () => {
+    const password = 'pw-fs-compromise';
+    const username = 'user-fs-compromise';
+    const serverPriv = p256.utils.randomSecretKey();
+    const serverPub = p256.getPublicKey(serverPriv, true);
+    const serverOprfKey = generateOprfKey();
+    const { record } = await register(password, username, serverOprfKey.oprfPrivate, serverPub);
+
+    const { ke1, clientState } = await clientLoginStep1(password, username);
+    const { ke2 } = await serverLoginStep2(ke1, record, serverPriv, serverPub);
+    const { sessionKey, threeDH } = await clientLoginStep3(ke2, clientState);
+
+    // Stolen long-term keys + the recorded transcript.
+    const rebuiltDh2 = dh(serverPriv, threeDH.clientEphemeralPublic);
+    const rebuiltDh3 = dh(threeDH.clientStaticPrivate, threeDH.serverEphemeralPublic);
+    expect(bytesEqual(rebuiltDh2, threeDH.dh2)).toBe(true);
+    expect(bytesEqual(rebuiltDh3, threeDH.dh3)).toBe(true);
+
+    // dh1 is not reachable from those inputs; any guess yields a different key.
+    const guessedDh1 = new Uint8Array(threeDH.dh1.byteLength);
+    const rebuilt = keySchedule(
+      concat(guessedDh1, rebuiltDh2, rebuiltDh3),
+      threeDH.preambleHash
+    ).sessionKey;
+    expect(bytesEqual(rebuilt, sessionKey)).toBe(false);
+
+    // Handed the real dh1 as well, the same schedule reproduces the key exactly —
+    // proof that dh1 is the *only* thing standing between attacker and session.
+    const withDh1 = keySchedule(
+      concat(threeDH.dh1, rebuiltDh2, rebuiltDh3),
+      threeDH.preambleHash
+    ).sessionKey;
+    expect(bytesEqual(withDh1, sessionKey)).toBe(true);
+  });
+
+  it('12. A static-only ikm survives every handshake and is recomputable from either side', async () => {
+    const password = 'pw-fs-static';
+    const username = 'user-fs-static';
+    const serverPriv = p256.utils.randomSecretKey();
+    const serverPub = p256.getPublicKey(serverPriv, true);
+    const serverOprfKey = generateOprfKey();
+    const { record } = await register(password, username, serverOprfKey.oprfPrivate, serverPub);
+
+    const { ke1, clientState } = await clientLoginStep1(password, username);
+    const { ke2 } = await serverLoginStep2(ke1, record, serverPriv, serverPub);
+    const { threeDH } = await clientLoginStep3(ke2, clientState);
+
+    const fromServerSide = dh(serverPriv, record.clientPublicKey);
+    const fromClientSide = dh(threeDH.clientStaticPrivate, threeDH.serverStaticPublic);
+    expect(bytesEqual(fromServerSide, fromClientSide)).toBe(true);
+
+    // A second login: dh1 changes, the static-only ikm does not.
+    const { ke1: ke1b, clientState: stateB } = await clientLoginStep1(password, username);
+    const { ke2: ke2b } = await serverLoginStep2(ke1b, record, serverPriv, serverPub);
+    const { threeDH: traceB } = await clientLoginStep3(ke2b, stateB);
+    expect(bytesEqual(traceB.dh1, threeDH.dh1)).toBe(false);
+
+    // …so the attacker reproduces the later session's static-only key exactly.
+    expect(
+      bytesEqual(
+        keySchedule(fromClientSide, traceB.preambleHash).sessionKey,
+        keySchedule(fromServerSide, traceB.preambleHash).sessionKey
+      )
+    ).toBe(true);
   });
 });

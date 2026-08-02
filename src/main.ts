@@ -24,12 +24,20 @@ import {
   oprfFinalize
 } from './oprf';
 import { ENVELOPE_FORMAT, register, recover, RegistrationRecord } from './envelope';
-import { stretchScrypt, deriveRandomizedPassword } from './kdf';
+import {
+  stretchScrypt,
+  deriveRandomizedPassword,
+  aeadSeal,
+  aeadOpen,
+  concat,
+  dh
+} from './kdf';
 import {
   clientLoginStep1,
   serverLoginStep2,
   clientLoginStep3,
   serverFinalize,
+  keySchedule,
   AKEMessage1,
   AKEMessage2,
   AKEMessage3,
@@ -1005,16 +1013,50 @@ function createThreeDHDiagram(t: ThreeDHTrace): HTMLElement {
 }
 
 /**
- * A small, pokeable forward-secrecy demonstration attached under the 3DH
- * diagram. "Leak" the real session key and show, concretely, that it (a) has no
- * path back to the password, and (b) can't be reproduced from the long-term keys
- * alone, because dh1 mixed in ephemeral secrets that are now gone. Contrasted
- * with a hypothetical static-only scheme where the same long-term keys would
- * always regenerate the same key (no forward secrecy). Nothing is faked: the
- * ephemeral secret keys genuinely never leave the AKE, so the demo can only
- * *state* they're destroyed — which is exactly the security argument.
+ * A pokeable forward-secrecy demonstration attached under the 3DH diagram.
+ *
+ * Everything below is *run*, not narrated. Pressing the button:
+ *
+ *   1. seals a fake application record under the session key the learner just
+ *      watched being agreed (session A);
+ *   2. runs a second, complete login for the same account (session B) — same
+ *      long-term keys, fresh ephemerals — and seals a record under its key;
+ *   3. gives a simulated attacker the leaked session key A *and* both
+ *      long-term secret keys *and* the recorded transcript, then has them
+ *      rebuild as much of session B's key schedule as those inputs allow, and
+ *      reports what the AES-GCM tags actually did;
+ *   4. re-runs the identical key schedule over a *static-only* ikm —
+ *      DH(client_static, server_static), no ephemeral terms — and reports what
+ *      the same attacker gets against that scheme instead.
+ *
+ * Step 3 is the property holding; step 4 is the property failing. Both
+ * outcomes are read off real GCM verifications and real byte comparisons, so
+ * the negative case is reachable rather than described.
  */
-function addForwardSecrecyPoke(host: HTMLElement, sessionKey: Uint8Array): void {
+interface FsPokeContext {
+  record: RegistrationRecord;
+  serverPrivate: Uint8Array;
+  serverPublic: Uint8Array;
+  password: string;
+  username: string;
+  threeDH: ThreeDHTrace;
+}
+
+/** One measured outcome: what was attempted, and what actually happened. */
+interface FsMeasurement {
+  what: string;
+  detail: string;
+  /** true when the attacker succeeded at this step. */
+  attackerWon: boolean;
+  /** true when this outcome is the *good* one for forward secrecy. */
+  good: boolean;
+}
+
+function addForwardSecrecyPoke(
+  host: HTMLElement,
+  sessionKey: Uint8Array,
+  ctx: FsPokeContext
+): void {
   const wrap = document.createElement('div');
   wrap.className = 'fs-poke';
 
@@ -1026,42 +1068,184 @@ function addForwardSecrecyPoke(host: HTMLElement, sessionKey: Uint8Array): void 
   const p = document.createElement('p');
   p.className = 'fs-poke-lede';
   p.innerHTML =
-    'Suppose an attacker records this whole login off the wire and later steals ' +
-    'this exact <span class="tag tag-rwd">session key</span>. What did they get?';
+    'Suppose an attacker records this whole login off the wire, later steals ' +
+    'this exact <span class="tag tag-rwd">session key</span>, and steals <em>both</em> ' +
+    'long-term secret keys on top of that. Rather than tell you what happens, this ' +
+    'panel runs a second login, encrypts traffic under each session key, hands the ' +
+    'attacker everything listed above, and reports which AES-256-GCM tags verified.';
   wrap.appendChild(p);
 
   const out = createStatusRegion('fs-poke-out');
   wrap.appendChild(out);
 
-  const btn = createButton('Leak this session key', () => {
+  const enc = new TextEncoder();
+  const dec = new TextDecoder();
+
+  const runAttack = async (): Promise<void> => {
     out.replaceChildren();
 
-    const grid = createByteGrid('LEAKED session_key', sessionKey, {
-      variant: 'secret',
-      note: 'the attacker now holds every one of these bytes'
+    const pending = document.createElement('p');
+    pending.className = 'fs-pending';
+    pending.textContent = 'Running a second login and replaying the attack…';
+    out.appendChild(pending);
+
+    // ---- Session A: the login the learner just stepped through --------------
+    const traceA = ctx.threeDH;
+    const nonceA = crypto.getRandomValues(new Uint8Array(12));
+    const plainA = enc.encode('session A traffic: GET /account');
+    const sealedA = await aeadSeal(sessionKey, nonceA, plainA);
+
+    // ---- Session B: a genuinely fresh second login, same account ------------
+    const b1 = await clientLoginStep1(ctx.password, ctx.username);
+    const b2 = await serverLoginStep2(b1.ke1, ctx.record, ctx.serverPrivate, ctx.serverPublic);
+    const b3 = await clientLoginStep3(b2.ke2, b1.clientState);
+    const sessionKeyB = b3.sessionKey;
+    const traceB = b3.threeDH;
+    const nonceB = crypto.getRandomValues(new Uint8Array(12));
+    const plainB = enc.encode('session B traffic: GET /account');
+    const sealedB = await aeadSeal(sessionKeyB, nonceB, plainB);
+
+    // ---- What the attacker holds -------------------------------------------
+    const stolenServerStatic = ctx.serverPrivate;
+    const stolenClientStatic = traceA.clientStaticPrivate;
+
+    const results: FsMeasurement[] = [];
+
+    // (1) The leaked key against the session it belongs to.
+    const openedA = await aeadOpen(sessionKey, nonceA, sealedA);
+    results.push({
+      what: 'Leaked session key A vs. session A traffic',
+      detail:
+        openedA === null
+          ? 'GCM tag rejected — nothing recovered'
+          : `GCM tag verified — recovered “${dec.decode(openedA)}”`,
+      attackerWon: openedA !== null,
+      good: false
     });
-    out.appendChild(grid);
+
+    // (2) The same leaked key against the *next* session's traffic.
+    const crossOpen = await aeadOpen(sessionKey, nonceB, sealedB);
+    results.push({
+      what: 'Leaked session key A vs. session B traffic',
+      detail:
+        crossOpen === null
+          ? 'GCM tag rejected — nothing recovered'
+          : `GCM tag verified — recovered “${dec.decode(crossOpen)}”`,
+      attackerWon: crossOpen !== null,
+      good: crossOpen === null
+    });
+
+    // (3) Rebuild session B's key schedule from the stolen long-term keys plus
+    //     the recorded transcript. dh2 and dh3 fall out; dh1 does not, because
+    //     both of its inputs were ephemeral private keys that no longer exist.
+    const rebuiltDh2 = dh(stolenServerStatic, traceB.clientEphemeralPublic);
+    const rebuiltDh3 = dh(stolenClientStatic, traceB.serverEphemeralPublic);
+    const dh2Exact = hex(rebuiltDh2) === hex(traceB.dh2);
+    const dh3Exact = hex(rebuiltDh3) === hex(traceB.dh3);
+    results.push({
+      what: 'Rebuild dh2 and dh3 for session B from the stolen long-term keys',
+      detail:
+        `dh2 ${dh2Exact ? 'matches' : 'does NOT match'} the real dh2; ` +
+        `dh3 ${dh3Exact ? 'matches' : 'does NOT match'} the real dh3 — ` +
+        'two of the three terms recovered exactly',
+      attackerWon: dh2Exact && dh3Exact,
+      good: false
+    });
+
+    // dh1 = ephemeral × ephemeral. The attacker can only guess it.
+    const guessedDh1 = crypto.getRandomValues(new Uint8Array(traceB.dh1.byteLength));
+    const rebuiltKeyB = keySchedule(
+      concat(guessedDh1, rebuiltDh2, rebuiltDh3),
+      traceB.preambleHash
+    ).sessionKey;
+    const rebuiltMatches = hex(rebuiltKeyB) === hex(sessionKeyB);
+    const rebuiltOpen = await aeadOpen(rebuiltKeyB, nonceB, sealedB);
+    results.push({
+      what: 'Derive session key B from that rebuild (one guess at dh1)',
+      detail:
+        `derived ${bytesToHex(rebuiltKeyB, 8)} vs. real ${bytesToHex(sessionKeyB, 8)} — ` +
+        `${rebuiltMatches ? 'identical' : 'different'}; traffic ` +
+        `${rebuiltOpen === null ? 'did NOT decrypt' : 'DECRYPTED'}`,
+      attackerWon: rebuiltOpen !== null,
+      good: rebuiltOpen === null && !rebuiltMatches
+    });
+
+    // (4) The same attacker, the same stolen keys, against a static-only
+    //     scheme: identical key schedule, but the ikm is the long-term-only
+    //     Diffie-Hellman with no ephemeral term at all.
+    const staticIkmServerSide = dh(stolenServerStatic, ctx.record.clientPublicKey);
+    const staticIkmClientSide = dh(stolenClientStatic, traceA.serverStaticPublic);
+    const staticAgrees = hex(staticIkmServerSide) === hex(staticIkmClientSide);
+    const staticKeyA = keySchedule(staticIkmServerSide, traceA.preambleHash).sessionKey;
+    const staticKeyB = keySchedule(staticIkmServerSide, traceB.preambleHash).sessionKey;
+    const staticSealedA = await aeadSeal(staticKeyA, nonceA, plainA);
+    const staticSealedB = await aeadSeal(staticKeyB, nonceB, plainB);
+    // The attacker recomputes both from the *stolen client* side, independently.
+    const attackerStaticA = keySchedule(staticIkmClientSide, traceA.preambleHash).sessionKey;
+    const attackerStaticB = keySchedule(staticIkmClientSide, traceB.preambleHash).sessionKey;
+    const staticOpenA = await aeadOpen(attackerStaticA, nonceA, staticSealedA);
+    const staticOpenB = await aeadOpen(attackerStaticB, nonceB, staticSealedB);
+    results.push({
+      what: 'Same attack against a static-only scheme (ikm = DH(client_static, server_static))',
+      detail:
+        `long-term shared secret ${staticAgrees ? 'recomputed exactly' : 'not recomputed'}; ` +
+        `session A traffic ${staticOpenA === null ? 'did NOT decrypt' : 'DECRYPTED'}; ` +
+        `session B traffic ${staticOpenB === null ? 'did NOT decrypt' : 'DECRYPTED'}`,
+      attackerWon: staticOpenA !== null && staticOpenB !== null,
+      good: false
+    });
+
+    // ---- Render -------------------------------------------------------------
+    out.replaceChildren();
+
+    out.appendChild(
+      createByteGrid('LEAKED session_key (session A)', sessionKey, {
+        variant: 'secret',
+        note: 'the attacker now holds every one of these bytes'
+      })
+    );
 
     const facts = document.createElement('div');
     facts.className = 'fs-facts';
-    facts.innerHTML =
-      `<div class="fs-fact fs-good"><span aria-hidden="true">✓</span> ` +
-      `<span>The password and the <span class="tag tag-rwd">RWD</span> are safe. The session ` +
-      `key is an HKDF output; there is no computational path from it back to the OPRF output ` +
-      `or the password.</span></div>` +
-      `<div class="fs-fact fs-good"><span aria-hidden="true">✓</span> ` +
-      `<span>Past and future logins are safe. Each mixes in <code>dh1</code> = ` +
-      `ephemeral×ephemeral, and those ephemeral private keys were discarded when the handshake ` +
-      `finished — they were never stored and never sent. Without them this key can’t be ` +
-      `recomputed, and the next login draws fresh ones.</span></div>` +
-      `<div class="fs-fact fs-bad"><span aria-hidden="true">✗</span> ` +
-      `<span><strong>Contrast — a static-only scheme</strong> (no ephemeral keys, key derived ` +
-      `from long-term keys alone): stealing the long-term keys once would regenerate <em>every</em> ` +
-      `past and future session key. That scheme has <em>no</em> forward secrecy. The single ` +
-      `<code>dh1</code> term is the entire difference.</span></div>`;
+    results.forEach(r => {
+      const row = document.createElement('div');
+      row.className = `fs-fact ${r.good ? 'fs-good' : 'fs-bad'}`;
+      row.dataset.fsMeasured = r.attackerWon ? 'attacker-won' : 'attacker-blocked';
+      row.innerHTML =
+        `<span aria-hidden="true">${r.good ? '✓' : '✗'}</span>` +
+        `<span><strong>${escapeHtml(r.what)}</strong><br />${escapeHtml(r.detail)}</span>`;
+      facts.appendChild(row);
+    });
     out.appendChild(facts);
-    return Promise.resolve();
-  });
+
+    // The verdict is read off the measurements above, not written in advance.
+    const forwardSecrecyHeld = crossOpen === null && rebuiltOpen === null && !rebuiltMatches;
+    const staticSchemeBroken = staticOpenA !== null && staticOpenB !== null;
+
+    const verdict = document.createElement('p');
+    verdict.className = 'fs-verdict';
+    verdict.dataset.fsVerdict = forwardSecrecyHeld ? 'held' : 'broken';
+    verdict.innerHTML =
+      `<strong>Measured verdict:</strong> against 3DH, forward secrecy ` +
+      `<strong>${forwardSecrecyHeld ? 'HELD' : 'FAILED'}</strong> — the attacker held the leaked ` +
+      `session key and both long-term secret keys and still could not open session B. Against ` +
+      `the static-only scheme, the same attacker ` +
+      `<strong>${staticSchemeBroken ? 'opened both sessions' : 'opened neither session'}</strong>. ` +
+      `The one input the attacker could not reconstruct is <code>dh1</code> = ephemeral × ` +
+      `ephemeral: both private halves were discarded when the handshake finished.`;
+    out.appendChild(verdict);
+
+    const caveat = document.createElement('p');
+    caveat.className = 'fs-caveat';
+    caveat.innerHTML =
+      'One claim this panel deliberately does <em>not</em> measure: that the leaked session key ' +
+      'reveals nothing about the password. That is an argument about HKDF being one-way, not ' +
+      'something a browser can demonstrate by running it — so it is stated as an argument here, ' +
+      'not scored as a result.';
+    out.appendChild(caveat);
+  };
+
+  const btn = createButton('Leak the session key and run the attack', () => runAttack());
   wrap.appendChild(btn);
   host.appendChild(wrap);
 }
@@ -1225,6 +1409,10 @@ function createExhibit3(): HTMLElement {
   let serverState: ServerState | null = null;
   let ke3: AKEMessage3 | null = null;
   let threeDH: ThreeDHTrace | null = null;
+  // Credentials the current attempt was driven with — the forward-secrecy
+  // exhibit replays a second real login with them.
+  let usedPassword = '';
+  let usedUsername = '';
 
   const stepBtn = createButton('Start login →', () => advance());
   const restartBtn = createButton('Restart', () => resetHandshake());
@@ -1314,6 +1502,8 @@ function createExhibit3(): HTMLElement {
     if (phase === 'idle') {
       // ---- KE1: client → server -------------------------------------------
       const usePwd = wrongCb.checked ? logPassword.value + '_WRONG' : logPassword.value;
+      usedPassword = usePwd;
+      usedUsername = logUsername.value;
       const r = await clientLoginStep1(usePwd, logUsername.value);
       ke1 = r.ke1;
       clientState = r.clientState;
@@ -1442,7 +1632,16 @@ function createExhibit3(): HTMLElement {
           dhBox.className = 'threedh-reveal';
           dhBox.appendChild(createThreeDHDiagram(threeDH));
           logPanel.appendChild(dhBox);
-          addForwardSecrecyPoke(dhBox, finalKey);
+          addForwardSecrecyPoke(dhBox, finalKey, {
+            record: s.record,
+            serverPrivate: s.serverPrivate,
+            serverPublic: s.serverPublic,
+            // The credentials the handshake we just watched actually used —
+            // reaching 'done' means they were the correct ones.
+            password: usedPassword,
+            username: usedUsername,
+            threeDH
+          });
         }
 
         phase = 'done';
