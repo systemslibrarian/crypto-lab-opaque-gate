@@ -23,7 +23,7 @@ import {
   oprfBlindEvaluate,
   oprfFinalize
 } from './oprf';
-import { register, recover, RegistrationRecord } from './envelope';
+import { ENVELOPE_FORMAT, register, recover, RegistrationRecord } from './envelope';
 import { stretchScrypt, deriveRandomizedPassword } from './kdf';
 import {
   clientLoginStep1,
@@ -237,7 +237,7 @@ const TERM_DEFS: Record<string, string> = {
   evaluated_message: 'The blinded point after the server multiplied it by its secret OPRF key k. Still blinded, so the server learned nothing; the client will divide out r to finish.',
   masked_response: 'The server’s public key and the user’s envelope, XORed with a keystream derived from the per-user masking_key. Without the right password (→ RWD → masking_key) it is indistinguishable from random.',
   masking_key: 'A per-user key (derived from the RWD) the server uses to mask its response. The client re-derives it from the password on login to unmask the envelope.',
-  envelope: 'What the server stores per user: a nonce plus one HMAC tag over the credentials. The client’s long-term private key is NOT stored — it is re-derived from the RWD every login. A wrong password fails the tag.',
+  envelope: `What the server stores per user: ${ENVELOPE_FORMAT}. The client’s long-term private key is NOT stored — it is re-derived from the RWD every login. A wrong password fails the tag.`,
   envelope_nonce: 'The random nonce inside the envelope. Combined with the auth_key it produces the HMAC tag that lets the client detect a wrong password or a tampered record.',
   keyshare: 'An ephemeral (single-use) Diffie-Hellman public key. Each side sends a fresh one per login; mixing the two ephemerals is what gives the session forward secrecy.',
   preamble: 'The handshake transcript: a byte string committing to the context, identities, and every message sent (KE1, the credential response, the server nonce and keyshare). Both MACs are computed over its hash, so any tampering breaks authentication.',
@@ -571,7 +571,7 @@ function createExhibit1(): HTMLElement {
       </div>
       <div class="breach-option breach-good">
         <strong>3. OPAQUE</strong>
-        <span>Server stored an encrypted-looking <em>envelope</em> + a per-user OPRF key,
+        <span>Server stored an opaque-looking authenticated <em>envelope</em> + a per-user OPRF key,
         never the password or any password hash.</span>
         <span class="breach-verdict">Your stored envelope: <code>${envelopeHex}</code>
         (masking key <code>${maskingHex}</code>). Without the password it is
@@ -1399,7 +1399,7 @@ function createExhibit3(): HTMLElement {
         );
         phase = 'ke3';
         stepStatus.textContent =
-          'Client unblinded the RWD, re-derived its static key, opened the envelope (server MAC verified), and sent its own MAC. One step left: the server checks it.';
+          'Client unblinded the RWD, re-derived its static key, authenticated the envelope (server MAC verified), and sent its own MAC. One step left: the server checks it.';
         stepBtn.textContent = 'Server verifies KE3 →';
 
         // Stash session-key material + the real 3DH trace for the final step.
@@ -1539,8 +1539,10 @@ interface StolenRecord {
 /**
  * One offline password guess, run for real: OPRF-evaluate the candidate with
  * the stolen per-user OPRF key, derive randomized_password (including the
- * scrypt stretch), then try to open the envelope. `recover()` throws on MAC
- * mismatch, so a returned `true` means the envelope genuinely opened.
+ * scrypt stretch), then try to authenticate the envelope and recover the
+ * credentials. `recover()` throws on MAC
+ * mismatch, so a returned `true` means the envelope genuinely authenticated
+ * and the client credentials were recovered.
  */
 function tryOfflineGuess(stolen: StolenRecord, candidate: string): boolean {
   const bytes = new TextEncoder().encode(candidate);
@@ -1562,7 +1564,7 @@ function tryOfflineGuess(stolen: StolenRecord, candidate: string): boolean {
   }
 }
 
-/** Attack 1: open the envelope without the password. Uses random RWD bytes. */
+/** Attack 1: authenticate/recover without the password. Uses random RWD bytes. */
 function attackWithoutPassword(stolen: StolenRecord): { opened: boolean; error: string } {
   const guessedRwd = crypto.getRandomValues(new Uint8Array(32));
   try {
@@ -1664,7 +1666,7 @@ function createExhibit4(): HTMLElement {
     // Yield so the "running" state paints before the scrypt work blocks the thread.
     await new Promise(r => setTimeout(r, 0));
 
-    // --- Attack 1: open the envelope with no password at all ---
+    // --- Attack 1: authenticate/recover with no password at all ---
     const a1 = attackWithoutPassword(stolen);
 
     // --- Attack 2: a real offline dictionary attack. The true password is put
@@ -1694,7 +1696,7 @@ function createExhibit4(): HTMLElement {
         r =>
           `<li><code>${escapeHtml(r.candidate)}</code> — ${
             r.hit
-              ? '<strong>envelope opened</strong>'
+              ? '<strong>envelope authenticated; credentials recovered</strong>'
               : 'MAC mismatch, rejected'
           }</li>`
       )
@@ -1707,14 +1709,14 @@ function createExhibit4(): HTMLElement {
       )}</code> for user "${escapeHtml(s.username)}".</p>
 
       <div class="attack-scenario ${a1.opened ? 'attack-warn' : 'attack-blocked'}">
-        <strong>Attack 1 — open the envelope with no password</strong>
+        <strong>Attack 1 — authenticate the envelope with no password</strong>
         <span>Called <code>recover()</code> with 32 random bytes standing in for the RWD.
         The client static key is <em>derived</em> from the RWD and the envelope is an HMAC
         under <code>auth_key = HKDF-Expand(RWD, nonce||"AuthKey")</code>, so a wrong RWD
         produces a wrong tag.</span>
         <span class="breach-verdict">${
           a1.opened
-            ? '<span aria-hidden="true">⚠</span> IT OPENED — the envelope is not binding the RWD'
+            ? '<span aria-hidden="true">⚠</span> IT AUTHENTICATED — the envelope is not binding the RWD'
             : `<span aria-hidden="true">✗</span> Blocked — <code>${escapeHtml(
                 a1.error
               )}</code>`
@@ -1735,8 +1737,8 @@ function createExhibit4(): HTMLElement {
         quoted figure, is the whole defence.</span>
         <span class="breach-verdict">${
           cracked
-            ? '<span aria-hidden="true">⚠</span> Possible — the right guess opened it, the wrong ones did not. A weak password falls; a strong one is out of reach at this rate.'
-            : '<span aria-hidden="true">✗</span> No candidate opened the envelope in this run.'
+            ? '<span aria-hidden="true">⚠</span> Possible — the right guess authenticated it and recovered the credentials; the wrong ones did not. A weak password falls; a strong one is out of reach at this rate.'
+            : '<span aria-hidden="true">✗</span> No candidate authenticated the envelope in this run.'
         }</span>
       </div>
 
@@ -1859,7 +1861,7 @@ function initApp() {
     <div class="cl-hero-main">
       <h1 class="cl-hero-title">OPAQUE</h1>
       <p class="cl-hero-sub">aPAKE · RFC 9807</p>
-      <p class="cl-hero-desc">Runs the real OPRF → encrypted-envelope → 3-message 3DH handshake so you can step through a registration and login where the server never sees your password.</p>
+      <p class="cl-hero-desc">Runs the real OPRF → authenticated envelope (${ENVELOPE_FORMAT}) → 3-message 3DH handshake so you can step through a registration and login where the server never sees your password.</p>
     </div>
     <aside class="cl-hero-why" aria-label="Why it matters">
       <span class="cl-hero-why-label">WHY IT MATTERS</span>

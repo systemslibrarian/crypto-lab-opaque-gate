@@ -8,14 +8,14 @@ It opens with a one-screen **map of the whole protocol** (`password → OPRF →
 
 This is the most practically relevant password authentication scheme for the post-hash-compromise era:
 
-- **Registration**: Client generates credentials, encrypts them with a key derived from the password via an Oblivious PRF. Server stores only the encrypted envelope, the OPRF evaluation key, and the client's public key. Zero password bytes.
+- **Registration**: Client derives credentials from the password-assisted OPRF and authenticates them with an HMAC. In internal mode, the server stores an envelope containing only a nonce and HMAC tag, plus the OPRF evaluation key and client's public key. Zero password bytes and no envelope ciphertext.
 
-- **Login**: Client blinds the password with a random factor. Server evaluates it with a secret key (only known to the server). Client unblinds the result to recover the key that opens the credential envelope. Server never sees the unblinded value, never sees the password.
+- **Login**: Client blinds the password with a random factor. Server evaluates it with a secret key (only known to the server). Client unblinds the result, re-derives its credentials, and authenticates the envelope's HMAC tag. Server never sees the unblinded value or the password.
 
 - **Mutual Authentication & Forward Secrecy**: Three Diffie-Hellman operations provide mutual proof that both client and server hold the right long-term keys. One of the three mixes a fresh ephemeral from each side, which is what gives *forward secrecy*: because those ephemeral private keys are discarded when the handshake ends, later compromise of the long-term keys (or of the password, or of the server record) does not let an attacker recompute the session keys of past logins it recorded off the wire.
 
 **Key property**: If the server database is breached:
-- Attacker has encrypted credential envelope + OPRF key
+- Attacker has an authenticated envelope (nonce + HMAC tag, no ciphertext) + OPRF key
 - Offline dictionary attack _is_ possible, but each guess costs one OPRF evaluation plus one run of the key-stretching function. Exhibit 4 measures that rate in your own browser rather than quoting a figure; this build uses scrypt N=2^15, r=8, which is memory-hard in a way bcrypt is not, so the two are not interchangeable cost units.
 - No plaintext password exposed; no rainbow tables work (OPRF key varies per user)
 - Pre-computation attacks are **impossible**
@@ -168,13 +168,13 @@ Risk: ILS database breach → patron passwords (or hashes) leaked → credential
 OPAQUE deployment would mean:
 
 ```
-Patron enters password (never leaves device) → 
-  Blind with OPRF → 
-  Server evaluates (returns encrypted credentials) → 
-  Patron decrypts locally → 
+Patron enters password (never leaves device) →
+  Blind with OPRF →
+  Server evaluates (returns the masked credential response) →
+  Patron unmasks it, verifies the envelope tag, and re-derives credentials locally →
   3DH session established
 
-Breach: Encrypted envelope + OPRF key (useless without password)
+Breach: Authenticated envelope (nonce + HMAC tag) + OPRF key
 Auth failure: Attacker cannot forge login without correct password
 ```
 

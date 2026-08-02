@@ -40,6 +40,8 @@ import {
 
 export const ENVELOPE_LENGTH = Nn + Nm; // 64 bytes
 export const MASKED_RESPONSE_LENGTH = Npk + ENVELOPE_LENGTH; // 97 bytes
+/** Internal-mode envelope contents, exported so learner-facing copy cannot drift. */
+export const ENVELOPE_FORMAT = 'nonce + HMAC authentication tag (no ciphertext)';
 
 const LABEL_AUTH_KEY = new TextEncoder().encode('AuthKey');
 const LABEL_EXPORT_KEY = new TextEncoder().encode('ExportKey');
@@ -262,4 +264,3 @@ export async function register(
     exportKey
   };
 }
-
