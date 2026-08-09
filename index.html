@@ -7,7 +7,14 @@
     <meta name="theme-color" content="#0a0a14" />
     <title>OPAQUE aPAKE Demo — RFC 9807</title>
     <script>
-      const t = localStorage.getItem('cv-theme') || 'dark';
+      // 'theme' first — that is the key the shared header's toggle writes, and
+      // the header's is the only toggle a visitor can reach (each lab's own is
+      // hidden by the header CSS above). Reading 'cv-theme' alone meant the
+      // theme was never persisted: switch to light, reload, get dark. The
+      // 'cv-theme' fallback is kept so anyone who set it before still gets
+      // their preference, which is the same order harvest-vault and
+      // model-breach already use.
+      const t = localStorage.getItem('theme') || localStorage.getItem('cv-theme') || 'dark';
       document.documentElement.setAttribute('data-theme', t);
     </script>
     <link rel="stylesheet" href="/src/style.css" />
