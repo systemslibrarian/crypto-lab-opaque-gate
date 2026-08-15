@@ -74,7 +74,7 @@ npm run dev
 - **[@noble/hashes](https://github.com/paulmillr/noble-hashes)** for HKDF,
   HMAC, and scrypt
 - **WebCrypto** for randomness (`crypto.getRandomValues`)
-- **Vanilla CSS** with light/dark theme toggle
+- **Vanilla CSS**
 - Deployable to **GitHub Pages** (no backend)
 - Mobile-first, responsive layout
 - WCAG 2.1 AA compliant
@@ -226,7 +226,7 @@ src/
   ake.ts           — RFC 9807 §6 KE1 / KE2 / KE3, masked credential
                      response, full key schedule
   main.ts          — UI: five interactive exhibits
-  style.css        — Dark/light theme, responsive, accessible
+  style.css        — Dark theme, responsive, accessible
 
 tests/                        (run by `npm test`, never shipped in the bundle)
   verify.test.ts       — protocol-property tests (round-trip, tampering, FS)
@@ -247,7 +247,7 @@ tests/                        (run by `npm test`, never shipped in the bundle)
 - Keyboard navigation (all buttons, inputs, tabs focusable)
 - `aria-label` on all inputs and code blocks
 - `role="alert"` on errors
-- High contrast light/dark themes
+- High contrast dark theme
 - `prefers-color-scheme` NOT used (explicit toggle instead)
 - Mobile-first responsive design (320px+)
 - Focus outlines on all interactive elements
