@@ -10,7 +10,7 @@
     "test:a11y": "playwright test"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.12.1",
+    "@axe-core/playwright": "^4.13.0",
     "@playwright/test": "^1.62.1",
     "@types/node": "^26.2.0",
     "typescript": "^7.0.2",
@@ -23,7 +23,7 @@
   },
   "homepage": "https://systemslibrarian.github.io/crypto-lab-opaque-gate/",
   "dependencies": {
-    "@noble/curves": "^2.2.0",
+    "@noble/curves": "^2.3.0",
     "@noble/hashes": "^2.3.0"
   }
 }
