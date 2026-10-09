@@ -5,7 +5,7 @@ export default defineConfig({
   base: '/crypto-lab-opaque-gate/',
   build: {
     target: 'esnext',
-    minify: 'esbuild',
+    minify: 'oxc',
     outDir: 'dist'
   },
   test: {
