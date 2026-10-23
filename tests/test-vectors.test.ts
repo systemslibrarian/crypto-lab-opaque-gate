@@ -2,8 +2,9 @@
  * RFC 9807 Appendix C.1 P256-SHA256 internal-mode test vector validation.
  *
  * The vector comes from the CFRG OPAQUE reference repo
- * (poc/vectors/vectors.json). It uses the Identity Stretch (KSF) so the
- * randomized password equals the OPRF output verbatim.
+ * (poc/vectors/vectors.json). It uses the Identity Stretch (KSF), so the KSF
+ * output equals the OPRF output; randomized_password is still the RFC 9807
+ * HKDF-Extract over their concatenation.
  *
  * Each test compares one intermediate or output byte-for-byte. A failure
  * pinpoints exactly which derivation drifted from the spec.
