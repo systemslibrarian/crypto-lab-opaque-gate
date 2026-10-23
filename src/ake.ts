@@ -51,7 +51,12 @@ import {
   deriveRandomizedPassword,
   dh,
   generateKeyPair,
-  deriveDiffieHellmanKeyPair
+  deriveDiffieHellmanKeyPair,
+  MAX_OPRF_INPUT_BYTES,
+  MAX_IDENTITY_BYTES,
+  assertBytes,
+  assertP256PublicKey,
+  assertP256SecretKey
 } from './kdf';
 import {
   oprfBlind,
@@ -109,33 +114,92 @@ export interface ServerState {
   expectedClientMac: Uint8Array;
 }
 
+function assertMatchingKeyPair(
+  name: string,
+  secretKey: Uint8Array,
+  publicKey: Uint8Array
+): void {
+  assertP256SecretKey(`${name} private key`, secretKey);
+  assertP256PublicKey(`${name} public key`, publicKey);
+  if (!ctEqual(p256.getPublicKey(secretKey, true), publicKey)) {
+    throw new Error(`${name}: public key does not match private key`);
+  }
+}
+
+function validateKE1(ke1: AKEMessage1): void {
+  if (!ke1 || typeof ke1 !== 'object') throw new TypeError('KE1: expected object');
+  assertP256PublicKey('KE1 blinded_message', ke1.blindedMessage);
+  assertBytes('KE1 client_nonce', ke1.clientNonce, { exact: Nn });
+  assertP256PublicKey('KE1 client_keyshare', ke1.clientKeyshare);
+}
+
+function validateCredentialResponse(response: CredentialResponse): void {
+  if (!response || typeof response !== 'object') {
+    throw new TypeError('credential response: expected object');
+  }
+  assertP256PublicKey('credential response evaluated_message', response.evaluatedMessage);
+  assertBytes('credential response masking_nonce', response.maskingNonce, { exact: Nn });
+  assertBytes('credential response masked_response', response.maskedResponse, {
+    exact: MASKED_RESPONSE_LENGTH
+  });
+}
+
+function validateKE2(ke2: AKEMessage2): void {
+  if (!ke2 || typeof ke2 !== 'object') throw new TypeError('KE2: expected object');
+  validateCredentialResponse(ke2.credentialResponse);
+  assertBytes('KE2 server_nonce', ke2.serverNonce, { exact: Nn });
+  assertP256PublicKey('KE2 server_keyshare', ke2.serverKeyshare);
+  assertBytes('KE2 server_mac', ke2.serverMac, { exact: Nh });
+}
+
+function validateRegistrationRecord(record: RegistrationRecord): void {
+  if (!record || typeof record !== 'object') {
+    throw new TypeError('registration record: expected object');
+  }
+  if (typeof record.credentialIdentifier !== 'string') {
+    throw new TypeError('credential identifier: expected string');
+  }
+  const credentialIdentifier = new TextEncoder().encode(record.credentialIdentifier);
+  assertBytes('credential identifier', credentialIdentifier, {
+    min: 1,
+    max: MAX_IDENTITY_BYTES
+  });
+  assertP256PublicKey('record client public key', record.clientPublicKey);
+  assertBytes('record masking key', record.maskingKey, { exact: Nh });
+  assertBytes('record envelope', record.envelope, { exact: ENVELOPE_LENGTH });
+  assertP256SecretKey('record OPRF key', record.oprfKey);
+}
+
 // ============================================================
 // Serialization
 // ============================================================
 
 export function serializeKE1(ke1: AKEMessage1): Uint8Array {
+  validateKE1(ke1);
   return concat(ke1.blindedMessage, ke1.clientNonce, ke1.clientKeyshare);
 }
 
 export function serializeCredentialResponse(cr: CredentialResponse): Uint8Array {
+  validateCredentialResponse(cr);
   return concat(cr.evaluatedMessage, cr.maskingNonce, cr.maskedResponse);
 }
 
 /** Parse 98-byte wire KE1 into the structured form serverLoginStep2 takes. */
 export function deserializeKE1(bytes: Uint8Array): AKEMessage1 {
-  if (bytes.byteLength !== Npk + Nn + Npk) {
-    throw new Error(`deserializeKE1: wrong length ${bytes.byteLength}`);
-  }
-  return {
+  assertBytes('serialized KE1', bytes, { exact: Npk + Nn + Npk });
+  const ke1 = {
     blindedMessage: bytes.slice(0, Npk),
     clientNonce: bytes.slice(Npk, Npk + Nn),
     clientKeyshare: bytes.slice(Npk + Nn)
   };
+  validateKE1(ke1);
+  return ke1;
 }
 
 const PREAMBLE_PREFIX = new TextEncoder().encode('OPAQUEv1-');
 
 function vec2(b: Uint8Array): Uint8Array {
+  assertBytes('vector', b, { max: MAX_IDENTITY_BYTES });
   return new Uint8Array([(b.byteLength >> 8) & 0xff, b.byteLength & 0xff]);
 }
 
@@ -184,6 +248,10 @@ function maskResponse(
   serverPublicKey: Uint8Array,
   envelope: Uint8Array
 ): Uint8Array {
+  assertBytes('masking key', maskingKey, { exact: Nh });
+  assertBytes('masking nonce', maskingNonce, { exact: Nn });
+  assertP256PublicKey('server public key', serverPublicKey);
+  assertBytes('envelope', envelope, { exact: ENVELOPE_LENGTH });
   const info = concat(
     maskingNonce,
     new TextEncoder().encode('CredentialResponsePad')
@@ -197,6 +265,9 @@ function unmaskResponse(
   maskingNonce: Uint8Array,
   maskedResponse: Uint8Array
 ): { serverPublicKey: Uint8Array; envelope: Uint8Array } {
+  assertBytes('masking key', maskingKey, { exact: Nh });
+  assertBytes('masking nonce', maskingNonce, { exact: Nn });
+  assertBytes('masked response', maskedResponse, { exact: MASKED_RESPONSE_LENGTH });
   const info = concat(
     maskingNonce,
     new TextEncoder().encode('CredentialResponsePad')
@@ -229,6 +300,11 @@ export interface KeySchedule {
  * the key the real handshake produced.
  */
 export function keySchedule(ikm: Uint8Array, preambleHash: Uint8Array): KeySchedule {
+  assertBytes('key schedule ikm', ikm, { min: Npk, max: 3 * Npk });
+  if (ikm.byteLength !== Npk && ikm.byteLength !== 3 * Npk) {
+    throw new Error(`key schedule ikm: expected ${Npk} or ${3 * Npk} bytes`);
+  }
+  assertBytes('key schedule preamble hash', preambleHash, { exact: Nh });
   const prk = extract(new Uint8Array(0), ikm);
   return {
     prk,
@@ -258,23 +334,42 @@ export async function clientLoginStep1(
     clientEphemeralPrivate?: Uint8Array;
   } = {}
 ): Promise<{ ke1: AKEMessage1; clientState: ClientState }> {
+  if (typeof password !== 'string') throw new TypeError('password: expected string');
+  if (typeof clientIdentityStr !== 'string') {
+    throw new TypeError('client identity: expected string');
+  }
   const passwordBytes = new TextEncoder().encode(password);
+  const clientIdentity = new TextEncoder().encode(clientIdentityStr);
+  assertBytes('password', passwordBytes, { min: 1, max: MAX_OPRF_INPUT_BYTES });
+  assertBytes('client identity', clientIdentity, { max: MAX_IDENTITY_BYTES });
+  if (options.clientNonce !== undefined) {
+    assertBytes('client nonce', options.clientNonce, { exact: Nn });
+  }
+  if (options.clientKeyshareSeed !== undefined) {
+    assertBytes('client keyshare seed', options.clientKeyshareSeed, { exact: 32 });
+  }
+  if (options.clientEphemeralPrivate !== undefined) {
+    assertP256SecretKey('client ephemeral private key', options.clientEphemeralPrivate);
+  }
+  if (options.clientKeyshareSeed && options.clientEphemeralPrivate) {
+    throw new Error('client ephemeral key: supply a seed or private key, not both');
+  }
 
   const { blind, blinded } = oprfBlind(passwordBytes, options.blind);
 
   const clientNonce =
-    options.clientNonce ?? crypto.getRandomValues(new Uint8Array(Nn));
+    options.clientNonce?.slice() ?? crypto.getRandomValues(new Uint8Array(Nn));
 
   let clientEphemeralPrivate: Uint8Array;
   let clientEphemeralPublic: Uint8Array;
   if (options.clientEphemeralPrivate) {
-    clientEphemeralPrivate = options.clientEphemeralPrivate;
+    clientEphemeralPrivate = options.clientEphemeralPrivate.slice();
     // Derive public from the supplied private (sec1 compressed).
     // We re-use noble via generateKeyPair? No — that randomises.
     // Use deriveDiffieHellmanKeyPair? No — that takes a seed and runs the
     // DeriveKeyPair counter loop. Caller supplied the actual private bytes,
     // so just compute G * sk.
-clientEphemeralPublic = p256.getPublicKey(clientEphemeralPrivate, true);
+    clientEphemeralPublic = p256.getPublicKey(clientEphemeralPrivate, true);
   } else if (options.clientKeyshareSeed) {
     const kp = deriveDiffieHellmanKeyPair(options.clientKeyshareSeed);
     clientEphemeralPrivate = kp.secretKey;
@@ -286,28 +381,30 @@ clientEphemeralPublic = p256.getPublicKey(clientEphemeralPrivate, true);
   }
 
   const ke1: AKEMessage1 = {
-    blindedMessage: blinded,
-    clientNonce,
-    clientKeyshare: clientEphemeralPublic
+    blindedMessage: blinded.slice(),
+    clientNonce: clientNonce.slice(),
+    clientKeyshare: clientEphemeralPublic.slice()
   };
 
-  const clientIdentity = new TextEncoder().encode(clientIdentityStr);
   const serverIdentity = options.serverIdentity ?? new Uint8Array(0);
   const context = options.context ?? DEFAULT_CONTEXT;
   const stretchFn = options.stretchFn ?? stretchScrypt;
+  assertBytes('server identity', serverIdentity, { max: MAX_IDENTITY_BYTES });
+  assertBytes('context', context, { max: MAX_IDENTITY_BYTES });
+  if (typeof stretchFn !== 'function') throw new TypeError('stretch function: expected function');
 
   return {
     ke1,
     clientState: {
       password,
-      blind,
-      clientNonce,
-      clientEphemeralPrivate,
-      clientEphemeralPublic,
+      blind: blind.slice(),
+      clientNonce: clientNonce.slice(),
+      clientEphemeralPrivate: clientEphemeralPrivate.slice(),
+      clientEphemeralPublic: clientEphemeralPublic.slice(),
       ke1Bytes: serializeKE1(ke1),
-      clientIdentity,
-      serverIdentity,
-      context,
+      clientIdentity: clientIdentity.slice(),
+      serverIdentity: serverIdentity.slice(),
+      context: context.slice(),
       stretchFn
     }
   };
@@ -332,11 +429,32 @@ export async function serverLoginStep2(
     serverEphemeralPrivate?: Uint8Array;
   } = {}
 ): Promise<{ ke2: AKEMessage2; serverState: ServerState }> {
+  validateKE1(ke1);
+  validateRegistrationRecord(record);
+  assertMatchingKeyPair('server static keypair', serverPrivateKey, serverPublicKey);
+  if (options.maskingNonce !== undefined) {
+    assertBytes('masking nonce', options.maskingNonce, { exact: Nn });
+  }
+  if (options.serverNonce !== undefined) {
+    assertBytes('server nonce', options.serverNonce, { exact: Nn });
+  }
+  if (options.serverKeyshareSeed !== undefined) {
+    assertBytes('server keyshare seed', options.serverKeyshareSeed, { exact: 32 });
+  }
+  if (options.serverEphemeralPrivate !== undefined) {
+    assertP256SecretKey('server ephemeral private key', options.serverEphemeralPrivate);
+  }
+  if (options.serverKeyshareSeed && options.serverEphemeralPrivate) {
+    throw new Error('server ephemeral key: supply a seed or private key, not both');
+  }
   const serverIdentity = options.serverIdentity ?? new Uint8Array(0);
   const clientIdentity =
     options.clientIdentity ??
     new TextEncoder().encode(record.credentialIdentifier);
   const context = options.context ?? DEFAULT_CONTEXT;
+  assertBytes('server identity', serverIdentity, { max: MAX_IDENTITY_BYTES });
+  assertBytes('client identity', clientIdentity, { max: MAX_IDENTITY_BYTES });
+  assertBytes('context', context, { max: MAX_IDENTITY_BYTES });
 
   // 1. OPRF evaluate.
   const evaluatedMessage = oprfBlindEvaluate(
@@ -346,7 +464,7 @@ export async function serverLoginStep2(
 
   // 2. Mask (server_pub || envelope) under per-user masking_key.
   const maskingNonce =
-    options.maskingNonce ?? crypto.getRandomValues(new Uint8Array(Nn));
+    options.maskingNonce?.slice() ?? crypto.getRandomValues(new Uint8Array(Nn));
   const maskedResponse = maskResponse(
     record.maskingKey,
     maskingNonce,
@@ -362,13 +480,13 @@ export async function serverLoginStep2(
 
   // 3. Server ephemeral keypair + nonce.
   const serverNonce =
-    options.serverNonce ?? crypto.getRandomValues(new Uint8Array(Nn));
+    options.serverNonce?.slice() ?? crypto.getRandomValues(new Uint8Array(Nn));
 
   let serverEphemeralPrivate: Uint8Array;
   let serverKeyshare: Uint8Array;
   if (options.serverEphemeralPrivate) {
-    serverEphemeralPrivate = options.serverEphemeralPrivate;
-serverKeyshare = p256.getPublicKey(serverEphemeralPrivate, true);
+    serverEphemeralPrivate = options.serverEphemeralPrivate.slice();
+    serverKeyshare = p256.getPublicKey(serverEphemeralPrivate, true);
   } else if (options.serverKeyshareSeed) {
     const kp = deriveDiffieHellmanKeyPair(options.serverKeyshareSeed);
     serverEphemeralPrivate = kp.secretKey;
@@ -468,7 +586,40 @@ export async function clientLoginStep3(
   exportKey: Uint8Array;
   threeDH: ThreeDHTrace;
 }> {
+  validateKE2(ke2);
+  if (!clientState || typeof clientState !== 'object') {
+    throw new TypeError('client state: expected object');
+  }
+  if (typeof clientState.password !== 'string') {
+    throw new TypeError('client state password: expected string');
+  }
   const passwordBytes = new TextEncoder().encode(clientState.password);
+  assertBytes('client state password', passwordBytes, {
+    min: 1,
+    max: MAX_OPRF_INPUT_BYTES
+  });
+  assertP256SecretKey('client state OPRF blind', clientState.blind);
+  assertBytes('client state nonce', clientState.clientNonce, { exact: Nn });
+  assertMatchingKeyPair(
+    'client ephemeral keypair',
+    clientState.clientEphemeralPrivate,
+    clientState.clientEphemeralPublic
+  );
+  assertBytes('client state KE1', clientState.ke1Bytes, {
+    exact: Npk + Nn + Npk
+  });
+  assertBytes('client state client identity', clientState.clientIdentity, {
+    max: MAX_IDENTITY_BYTES
+  });
+  assertBytes('client state server identity', clientState.serverIdentity, {
+    max: MAX_IDENTITY_BYTES
+  });
+  assertBytes('client state context', clientState.context, {
+    max: MAX_IDENTITY_BYTES
+  });
+  if (typeof clientState.stretchFn !== 'function') {
+    throw new TypeError('client state stretch function: expected function');
+  }
 
   const oprfOutput = oprfFinalize(
     passwordBytes,
@@ -554,6 +705,15 @@ export async function serverFinalize(
   ke3: AKEMessage3,
   serverState: ServerState
 ): Promise<Uint8Array> {
+  if (!ke3 || typeof ke3 !== 'object') throw new TypeError('KE3: expected object');
+  if (!serverState || typeof serverState !== 'object') {
+    throw new TypeError('server state: expected object');
+  }
+  assertBytes('KE3 client_mac', ke3.clientMac, { exact: Nh });
+  assertBytes('server state expected client MAC', serverState.expectedClientMac, {
+    exact: Nh
+  });
+  assertBytes('server state session key', serverState.sessionKey, { exact: Nh });
   if (!ctEqual(ke3.clientMac, serverState.expectedClientMac)) {
     throw new Error('Client MAC verification failed');
   }

@@ -5,12 +5,12 @@
  * Exhibit 2: The OPRF — Blinding the Password (obliviousness, live)
  * Exhibit 3: Registration and the stepped KE1 → KE2 → KE3 login handshake
  * Exhibit 4: Server Breach Simulation (grounded in the user's own envelope)
- * Exhibit 5: Real-World Deployments and Library Context
+ * Exhibit 5: Published and Adjacent Systems plus Library Context
  *
  * The cryptography under every exhibit is the real RFC 9807 / RFC 9497
  * implementation from src/oprf.ts, src/envelope.ts, src/ake.ts, src/kdf.ts —
- * spec-accurate and KAT-verified. The exhibits only *visualize* it; they never
- * fake, stub, or weaken a value.
+ * KAT-verified for the exercised P256-SHA256 paths. The exhibits only
+ * *visualize* it; they never fake, stub, or weaken a value.
  */
 
 import { p256 } from '@noble/curves/nist.js';
@@ -102,11 +102,13 @@ function createButton(label: string, onClick: () => void | Promise<void>): HTMLB
   const button = document.createElement('button');
   button.type = 'button';
   button.textContent = label;
-  button.onclick = () => {
+  button.onclick = async () => {
     button.disabled = true;
-    Promise.resolve(onClick()).finally(() => {
+    try {
+      await onClick();
+    } finally {
       button.disabled = false;
-    });
+    }
   };
   return button;
 }
@@ -129,6 +131,10 @@ function createLabeledInput(labelText: string, defaultValue?: string): {
   input.autocomplete = 'off';
   input.autocapitalize = 'none';
   input.spellcheck = false;
+  input.required = true;
+  // Core protocol functions enforce the RFC byte bounds; this tighter UI cap
+  // also prevents a teaching-page click from doing avoidable work on huge text.
+  input.maxLength = 256;
   if (defaultValue) input.value = defaultValue;
   wrap.appendChild(label);
   wrap.appendChild(input);
@@ -238,21 +244,21 @@ function createDetails(summary: string, bodyHtml: string, className = 'primer'):
  * is available at the point of confusion. Definitions are plain text (escaped).
  */
 const TERM_DEFS: Record<string, string> = {
-  RWD: 'Randomized password: the 32-byte secret the client recovers by unblinding the OPRF. A deterministic function of the password AND the server’s per-user key. Every credential key is derived from it. The server never sees it.',
-  randomized_pwd: 'The HKDF-Extract of the (scrypt-stretched) OPRF output. Same thing as the RWD in this demo’s code — the uniform pseudorandom key that every credential key is expanded from.',
+  RWD: 'Teaching shorthand here for the raw 32-byte OPRF output recovered after unblinding. RFC 9807 next stretches that output and runs HKDF-Extract to form randomized_password; the two values are related, but not identical.',
+  randomized_pwd: 'The HKDF-Extract of the raw OPRF output concatenated with its scrypt-stretched value. RFC 9807 derives the masking, authentication, export, and private-key seed material from this value.',
   'HKDF-Extract': 'The “concentrate the entropy” half of HKDF (RFC 5869): maps messy input keying material to one uniform pseudorandom key that HKDF-Expand then fans out into named keys.',
   blinded_message: 'The hashed password point multiplied by a fresh random factor r. This is what crosses the wire to the server — it looks like random noise and changes every login.',
   evaluated_message: 'The blinded point after the server multiplied it by its secret OPRF key k. Still blinded, so the server learned nothing; the client will divide out r to finish.',
-  masked_response: 'The server’s public key and the user’s envelope, XORed with a keystream derived from the per-user masking_key. Without the right password (→ RWD → masking_key) it is indistinguishable from random.',
-  masking_key: 'A per-user key (derived from the RWD) the server uses to mask its response. The client re-derives it from the password on login to unmask the envelope.',
-  envelope: `What the server stores per user: ${ENVELOPE_FORMAT}. The client’s long-term private key is NOT stored — it is re-derived from the RWD every login. A wrong password fails the tag.`,
+  masked_response: 'The server’s public key and the user’s envelope, XORed with a keystream derived from the per-user masking_key. Without the right password-derived randomized_password, the client cannot recover a valid response.',
+  masking_key: 'A per-user key derived from randomized_password. The client re-derives it from the password on login to unmask the credential response.',
+  envelope: `What the server stores per user: ${ENVELOPE_FORMAT}. The client’s long-term private key is NOT stored — it is re-derived from randomized_password every login. A wrong password fails response validation or envelope authentication.`,
   envelope_nonce: 'The random nonce inside the envelope. Combined with the auth_key it produces the HMAC tag that lets the client detect a wrong password or a tampered record.',
   keyshare: 'An ephemeral (single-use) Diffie-Hellman public key. Each side sends a fresh one per login; mixing the two ephemerals is what gives the session forward secrecy.',
   preamble: 'The handshake transcript: a byte string committing to the context, identities, and every message sent (KE1, the credential response, the server nonce and keyshare). Both MACs are computed over its hash, so any tampering breaks authentication.',
   'server_mac': 'A MAC the server computes over the preamble hash. The client checks it to prove it is talking to the real server (not an impostor) before revealing its own MAC.',
   '3DH': 'Three Diffie-Hellman: the login mixes three DH shared secrets — ephemeral×ephemeral (forward secrecy) plus ephemeral×static and static×ephemeral (mutual authentication) — into one key schedule. Visualized at the end of a successful login.',
-  session_key: 'The shared secret both sides independently arrive at after a successful 3DH handshake. Used to encrypt the session. Fresh every login; leaking one reveals nothing about past or future sessions.',
-  export_key: 'An extra key the client (only) derives from the RWD, stable across logins. Apps use it to encrypt client-side data (e.g. an E2E-encrypted backup) that even the server can’t read.'
+  session_key: 'The shared secret both sides independently arrive at after a successful 3DH handshake. Used to protect the session. With fresh randomness and erased ephemeral secrets, leaking one session key does not by itself derive another session key.',
+  export_key: 'An extra key the client (only) derives from randomized_password, stable across logins. Apps can use it as application key material for client-side data that the server cannot decrypt.'
 };
 
 let termIdCounter = 0;
@@ -366,12 +372,13 @@ function createGlossary(): HTMLElement {
   defs.className = 'glossary-defs';
   defs.appendChild(
     createDetails(
-      'RWD (randomized password / OPRF output)',
-      `<p>The 32-byte secret the client recovers after unblinding. It is a
-       deterministic function of the password <em>and</em> the server's per-user
-       OPRF key. In the code the raw OPRF output is stretched (scrypt) and fed
-       into HKDF-Extract to form <code>randomized_pwd</code>, which then derives
-       every credential key. Same password + same server key → same RWD, always.</p>`,
+      'OPRF output and randomized_password',
+      `<p>The client first recovers a 32-byte <code>oprf_output</code> after
+       unblinding. It is a deterministic function of the password <em>and</em>
+       the server's per-user OPRF key. RFC 9807 then stretches that value with
+       scrypt and feeds both values into HKDF-Extract to form the distinct
+       <code>randomized_password</code>, which derives every credential key.
+       Same password + same server key produces the same values.</p>`,
       'primer small'
     )
   );
@@ -381,7 +388,7 @@ function createGlossary(): HTMLElement {
       `<p>What the server stores per user: a random nonce plus one HMAC tag
        (<code>envelope = nonce || HMAC(auth_key, nonce || cleartext_creds)</code>).
        The client's long-term private key is <em>not</em> stored — it is re-derived
-       from the RWD on every login. The tag lets the client detect a wrong password
+       from <code>randomized_password</code> on every login. The tag lets the client detect a wrong password
        or a tampered record: recovery recomputes the MAC and rejects on mismatch.</p>`,
       'primer small'
     )
@@ -437,10 +444,10 @@ function createProtocolMap(): HTMLElement {
   const goal = document.createElement('p');
   goal.className = 'map-goal';
   goal.innerHTML = `
-    <strong>The one job:</strong> turn a weak, human password into a strong
-    cryptographic key — and do it so the <em>server can’t</em> derive that key on its
-    own (so a breach is worthless) yet the <em>right client</em> always can. That is
-    what the first stage, the OPRF, buys you. Everything after it uses that key.
+    <strong>The one job:</strong> turn a weak, human password into key material
+    without revealing the password to the server. Before compromise, the secret
+    OPRF key also prevents an attacker from preparing password tables. A breach is
+    still serious: the stolen record and key permit fresh per-user offline guesses.
   `;
   exhibit.appendChild(goal);
 
@@ -460,11 +467,11 @@ function createProtocolMap(): HTMLElement {
       target: 'exhibit-oprf',
       targetLabel: 'Exhibit 2'
     },
-    { kind: 'value', label: 'RWD', sub: 'a strong key only the right password can recover' },
+    { kind: 'value', label: 'oprf_output', sub: 'recovered only with a password guess' },
     {
       kind: 'op',
       label: 'envelope',
-      sub: 'the RWD locks a credential the server stores but can’t open',
+      sub: 'a stretched randomized_password authenticates the stored credential',
       target: 'exhibit-reg',
       targetLabel: 'Exhibit 3'
     },
@@ -582,8 +589,9 @@ function createExhibit1(): HTMLElement {
         <span>Server stored an opaque-looking authenticated <em>envelope</em> + a per-user OPRF key,
         never the password or any password hash.</span>
         <span class="breach-verdict">Your stored envelope: <code>${envelopeHex}</code>
-        (masking key <code>${maskingHex}</code>). Without the password it is
-        indistinguishable from random, and the OPRF key is useless for precomputation.
+        (masking key <code>${maskingHex}</code>). The secret OPRF key blocked advance
+        tables before this breach; now that the key and record are stolen, the attacker
+        can test fresh guesses one user at a time.
         <span aria-hidden="true">✓</span><span class="sr-only"> best</span></span>
       </div>
     `;
@@ -631,10 +639,10 @@ function createExhibit2(): HTMLElement {
   const purpose = document.createElement('p');
   purpose.className = 'exhibit-purpose';
   purpose.innerHTML = `
-    <strong>What this stage is for:</strong> turn the weak password into a strong key
-    (the <span class="tag tag-rwd">RWD</span>) that the server helps compute but can
-    <em>never</em> derive on its own. That is the whole point of the OPRF — the two
-    later stages (envelope, 3DH) just build on the key it produces.
+    <strong>What this stage is for:</strong> turn the weak password into a pseudorandom
+    <span class="tag tag-rwd">OPRF output</span> while hiding the password from the
+    server. RFC 9807 then stretches that output into <code>randomized_password</code>;
+    the envelope and 3DH stages build on that derived value.
   `;
   exhibit.appendChild(purpose);
 
@@ -644,8 +652,10 @@ function createExhibit2(): HTMLElement {
   intro.innerHTML = `
     Watch the defining property of an OPRF: <strong>every run puts a different
     value on the wire, but you always recover the same secret.</strong> The server
-    gets fresh noise each time (so it can't precompute or correlate you); the client
-    always lands on the same <span class="tag tag-rwd">RWD</span>.
+    gets fresh noise each time (so it cannot link the two requests by their blinded
+    values); the client always lands on the same
+    <span class="tag tag-rwd">oprf_output</span>. Resistance to pre-compromise password
+    tables comes separately from the server's unpredictable OPRF key.
   `;
   exhibit.appendChild(intro);
 
@@ -662,11 +672,11 @@ function createExhibit2(): HTMLElement {
     <span><span class="tag tag-wire">Blind</span> = what crosses the wire (changes every run)</span>
     &nbsp;&nbsp;
     <span class="swatch swatch-rwd" aria-hidden="true"></span>
-    <span><span class="tag tag-rwd">RWD</span> = the recovered secret (stays identical)</span>
+    <span><span class="tag tag-rwd">oprf_output</span> = the recovered value (stays identical)</span>
   `;
   exhibit.appendChild(legend);
 
-  // Server key is fixed for the exhibit so RWD stability is meaningful.
+  // Server key is fixed for the exhibit so OPRF-output stability is meaningful.
   const serverKey = generateOprfKey();
 
   const runsWrap = document.createElement('div');
@@ -733,7 +743,7 @@ function createExhibit2(): HTMLElement {
       })
     );
     left.appendChild(
-      createByteGrid('RWD — recovered secret', rwd, {
+      createByteGrid('oprf_output — recovered value', rwd, {
         variant: 'secret',
         changedMask: firstRwd
           ? Array.from(rwd).map((b, i) => b !== (firstRwd as Uint8Array)[i])
@@ -759,10 +769,10 @@ function createExhibit2(): HTMLElement {
         'Run 1 recorded. Now press "Run again (fresh r)" and compare the two cards.';
     } else if (rwdChanged) {
       status.textContent =
-        'The password changed, so the RWD changed. Reset and keep the password fixed to see obliviousness.';
+        'The password changed, so the OPRF output changed. Reset and keep the password fixed to see obliviousness.';
     } else {
       status.textContent =
-        'Same password: the Blind changed (fresh noise on the wire) but the RWD is byte-for-byte identical. The server cannot tell these two runs came from the same password.';
+        'Same password: the Blind changed (fresh noise on the wire) but the OPRF output is byte-for-byte identical. The server cannot tell these two requests carried the same password.';
     }
     prevBlind = blind;
   };
@@ -789,7 +799,7 @@ function createExhibit2(): HTMLElement {
     <strong>What the server sees:</strong> only <span class="tag tag-wire">Blind</span>
     — a random-looking curve point, different every run.<br />
     <strong>What the server never sees:</strong> the password, <code>H(pwd)</code>,
-    the blinding factor <code>r</code>, or the <span class="tag tag-rwd">RWD</span>.<br />
+    the blinding factor <code>r</code>, or the <span class="tag tag-rwd">oprf_output</span>.<br />
     <strong>Why unblinding is deterministic:</strong> blinding multiplies the hashed
     password point by <code>r</code>; the server multiplies by its key <code>k</code>;
     unblinding multiplies by <code>r⁻¹</code>. The <code>r</code> cancels, leaving
@@ -1524,7 +1534,7 @@ function createExhibit3(): HTMLElement {
             bytes: ke1.clientKeyshare
           }
         ],
-        ['the password', 'the unblinded RWD', 'the client static secret key']
+        ['the password', 'the unblinded OPRF output', 'the client static secret key']
       );
       phase = 'ke1';
       stepStatus.textContent = wrongCb.checked
@@ -1585,11 +1595,11 @@ function createExhibit3(): HTMLElement {
           'to-server',
           'KE3',
           [{ label: 'client_mac', bytes: ke3.clientMac }],
-          ['the password', 'the RWD', 'the recovered client secret key']
+          ['the password', 'the raw OPRF output', 'the recovered client secret key']
         );
         phase = 'ke3';
         stepStatus.textContent =
-          'Client unblinded the RWD, re-derived its static key, authenticated the envelope (server MAC verified), and sent its own MAC. One step left: the server checks it.';
+          'Client recovered the OPRF output, derived randomized_password and its static key, authenticated the envelope (server MAC verified), and sent its own MAC. One step left: the server checks it.';
         stepBtn.textContent = 'Server verifies KE3 →';
 
         // Stash session-key material + the real 3DH trace for the final step.
@@ -1597,13 +1607,13 @@ function createExhibit3(): HTMLElement {
         (advance as unknown as { _sk?: Uint8Array; _ek?: Uint8Array })._sk = r.sessionKey;
         (advance as unknown as { _sk?: Uint8Array; _ek?: Uint8Array })._ek = r.exportKey;
       } catch (e) {
-        // Wrong password path: envelope recovery / server-MAC verification fails
-        // inside clientLoginStep3 (the RWD is wrong → auth_key wrong → MAC mismatch).
+        // Wrong password path: unmasking, envelope recovery, or server-MAC
+        // verification fails inside clientLoginStep3.
         fail(
           'KE3 (client envelope recovery)',
-          `${(e as Error).message}. Wrong password → wrong RWD → wrong auth_key → the ` +
-            `envelope's HMAC tag doesn't verify, so the envelope won't open. The client ` +
-            `aborts before it can prove anything to the server.`
+          `${(e as Error).message}. A wrong password derives the wrong OPRF and ` +
+            `randomized_password values, so credential-response validation or envelope ` +
+            `authentication fails. The client aborts before proving anything to the server.`
         );
       }
       return;
@@ -1763,12 +1773,12 @@ function tryOfflineGuess(stolen: StolenRecord, candidate: string): boolean {
   }
 }
 
-/** Attack 1: authenticate/recover without the password. Uses random RWD bytes. */
+/** Attack 1: authenticate/recover without the password. Uses a random derived-password value. */
 function attackWithoutPassword(stolen: StolenRecord): { opened: boolean; error: string } {
-  const guessedRwd = crypto.getRandomValues(new Uint8Array(32));
+  const guessedRandomizedPassword = crypto.getRandomValues(new Uint8Array(32));
   try {
     recover(
-      guessedRwd,
+      guessedRandomizedPassword,
       stolen.serverPublic,
       stolen.record.envelope,
       new Uint8Array(0),
@@ -1909,13 +1919,12 @@ function createExhibit4(): HTMLElement {
 
       <div class="attack-scenario ${a1.opened ? 'attack-warn' : 'attack-blocked'}">
         <strong>Attack 1 — authenticate the envelope with no password</strong>
-        <span>Called <code>recover()</code> with 32 random bytes standing in for the RWD.
-        The client static key is <em>derived</em> from the RWD and the envelope is an HMAC
-        under <code>auth_key = HKDF-Expand(RWD, nonce||"AuthKey")</code>, so a wrong RWD
-        produces a wrong tag.</span>
+        <span>Called <code>recover()</code> with 32 random bytes standing in for
+        <code>randomized_password</code>. The client static key and envelope authentication
+        key are derived from that value, so random input produces the wrong tag.</span>
         <span class="breach-verdict">${
           a1.opened
-            ? '<span aria-hidden="true">⚠</span> IT AUTHENTICATED — the envelope is not binding the RWD'
+            ? '<span aria-hidden="true">⚠</span> IT AUTHENTICATED — the envelope is not binding randomized_password'
             : `<span aria-hidden="true">✗</span> Blocked — <code>${escapeHtml(
                 a1.error
               )}</code>`
@@ -1932,11 +1941,12 @@ function createExhibit4(): HTMLElement {
           0
         )} ms</strong> — <strong>${perOpMs.toFixed(0)} ms/guess &asymp; ${perSec.toFixed(
           1
-        )} guesses/sec</strong> single-threaded here (scrypt N=2¹⁵, r=8). That rate, not any
-        quoted figure, is the whole defence.</span>
+        )} guesses/sec</strong> single-threaded here (scrypt N=2¹⁵, r=8). This small,
+        browser-local measurement illustrates one component of guessing cost; password
+        entropy and attacker hardware also affect a real attack.</span>
         <span class="breach-verdict">${
           cracked
-            ? '<span aria-hidden="true">⚠</span> Possible — the right guess authenticated it and recovered the credentials; the wrong ones did not. A weak password falls; a strong one is out of reach at this rate.'
+            ? '<span aria-hidden="true">⚠</span> Possible — the right guess authenticated it and recovered the credentials; the wrong ones did not. Higher-entropy passwords require more guesses, but this small run is not a production cracking bound.'
             : '<span aria-hidden="true">✗</span> No candidate authenticated the envelope in this run.'
         }</span>
       </div>
@@ -1989,11 +1999,11 @@ function createExhibit4(): HTMLElement {
 }
 
 // ============================================================
-// Exhibit 5: Real-World Deployments
+// Exhibit 5: Published and Adjacent Systems
 // ============================================================
 
 function createExhibit5(): HTMLElement {
-  const exhibit = createContainer('Exhibit 5: Real-World Deployments & Library Context');
+  const exhibit = createContainer('Exhibit 5: Published & Adjacent Systems');
 
   const deployments = document.createElement('div');
   deployments.className = 'deployments';
@@ -2017,7 +2027,8 @@ function createExhibit5(): HTMLElement {
     </div>
     <div class="deployment">
       <strong>1Password</strong><br />
-      Research into OPAQUE for vault unlock
+      Uses SRP for password-and-Secret-Key account authentication and documents
+      CPace for an SSO enrollment flow; neither is evidence of an OPAQUE deployment
     </div>
   `;
   exhibit.appendChild(deployments);
@@ -2031,8 +2042,9 @@ function createExhibit5(): HTMLElement {
     Risk: ILS breach exposes patron passwords (reuse risk for bank, email)<br />
     <br />
     OPAQUE deployment would mean:<br />
-    ✓ ILS breach reveals NO patron passwords<br />
-    ✓ Patron not identifiable by password reuse<br />
+    ✓ No plaintext password or conventional password hash in the stolen record<br />
+    ⚠ A stolen record plus OPRF key still permits per-user offline guesses<br />
+    ✓ Password reuse is not directly exposed unless a guess recovers the password<br />
     ✓ Mutual auth: patron verifies server identity<br />
     ✓ Session keys ephemeral (forward secrecy)<br />
     <br />
@@ -2060,11 +2072,11 @@ function initApp() {
     <div class="cl-hero-main">
       <h1 class="cl-hero-title">OPAQUE</h1>
       <p class="cl-hero-sub">aPAKE · RFC 9807</p>
-      <p class="cl-hero-desc">Runs the real OPRF → authenticated envelope (${ENVELOPE_FORMAT}) → 3-message 3DH handshake so you can step through a registration and login where the server never sees your password.</p>
+      <p class="cl-hero-desc">Runs the real OPRF → authenticated envelope (${ENVELOPE_FORMAT}) → 3-message 3DH handshake so you can step through a registration and login whose protocol messages never reveal the password to the server.</p>
     </div>
     <aside class="cl-hero-why" aria-label="Why it matters">
       <span class="cl-hero-why-label">WHY IT MATTERS</span>
-      <p class="cl-hero-why-text">Breaches leak billions of reused credentials every year. OPAQUE makes a stolen database useless: there is no password, and no crackable password hash, for an attacker to walk away with.</p>
+      <p class="cl-hero-why-text">Breaches leak billions of reused credentials every year. OPAQUE keeps plaintext passwords and conventional password hashes out of the database, while forcing an attacker who steals both a record and its OPRF key to begin a per-user offline guessing attack.</p>
     </aside>
   `;
 

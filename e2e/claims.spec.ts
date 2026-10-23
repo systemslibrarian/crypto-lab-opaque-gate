@@ -14,6 +14,18 @@ test('the internal-mode envelope is described as authentication, not encryption'
   await expect(body).not.toContainText('decrypt the envelope');
 });
 
+test('breach and deployment claims preserve the demonstrated limitations', async ({ page }) => {
+  await page.goto('.');
+
+  const body = page.locator('body');
+  await expect(body).toContainText('per-user offline guessing attack');
+  await expect(body).toContainText('neither is evidence of an OPAQUE deployment');
+  await expect(body).not.toContainText('stolen database useless');
+  await expect(body).not.toContainText('whole defence');
+  await expect(body).not.toContainText('strong one is out of reach');
+  await expect(body).not.toContainText('breach reveals NO patron passwords');
+});
+
 /** Register, then step KE1 → KE2 → KE3 → verify, leaving the 3DH reveal open. */
 async function completeLogin(page: Page): Promise<void> {
   await page.goto('.');

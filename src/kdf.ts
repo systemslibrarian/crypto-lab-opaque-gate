@@ -25,9 +25,50 @@ export const Nsk = 32;
 export const Npk = 33;
 export const Nseed = 32;
 export const Noe = 33; // OPRF element length (P-256 compressed)
+export const MAX_OPRF_INPUT_BYTES = 0xfffe; // RFC 9497 §5.1: strictly below 2^16 - 1
+export const MAX_IDENTITY_BYTES = 0xffff; // RFC 9807 variable-length identity bound
+
+/** Reject malformed byte-oriented protocol inputs before a primitive sees them. */
+export function assertBytes(
+  name: string,
+  value: unknown,
+  options: { exact?: number; min?: number; max?: number } = {}
+): asserts value is Uint8Array {
+  if (!(value instanceof Uint8Array)) {
+    throw new TypeError(`${name}: expected Uint8Array`);
+  }
+  if (options.exact !== undefined && value.byteLength !== options.exact) {
+    throw new Error(`${name}: expected ${options.exact} bytes, got ${value.byteLength}`);
+  }
+  if (options.min !== undefined && value.byteLength < options.min) {
+    throw new Error(`${name}: expected at least ${options.min} bytes, got ${value.byteLength}`);
+  }
+  if (options.max !== undefined && value.byteLength > options.max) {
+    throw new Error(`${name}: exceeds ${options.max}-byte limit`);
+  }
+}
+
+/** Validate a canonical non-zero P-256 scalar. */
+export function assertP256SecretKey(name: string, value: unknown): asserts value is Uint8Array {
+  assertBytes(name, value, { exact: Nsk });
+  if (!p256.utils.isValidSecretKey(value)) {
+    throw new Error(`${name}: invalid P-256 secret scalar`);
+  }
+}
+
+/** Validate a compressed, on-curve, non-identity P-256 point. */
+export function assertP256PublicKey(name: string, value: unknown): asserts value is Uint8Array {
+  assertBytes(name, value, { exact: Npk });
+  if (!p256.utils.isValidPublicKey(value)) {
+    throw new Error(`${name}: invalid compressed P-256 point`);
+  }
+}
 
 /** Big-endian integer → fixed-length octet string. */
 export function i2osp(n: number, len: number): Uint8Array {
+  if (!Number.isSafeInteger(n) || !Number.isSafeInteger(len) || len < 0) {
+    throw new Error('i2osp: value and length must be non-negative safe integers');
+  }
   if (n < 0 || n >= Math.pow(2, 8 * len)) {
     throw new Error(`i2osp: value ${n} out of range for ${len} bytes`);
   }
@@ -84,6 +125,11 @@ export function extract(salt: Uint8Array, ikm: Uint8Array): Uint8Array {
 
 /** HKDF-Expand(prk, info, length) per RFC 5869. */
 export function expand(prk: Uint8Array, info: Uint8Array, length: number): Uint8Array {
+  assertBytes('expand prk', prk, { min: 1 });
+  assertBytes('expand info', info);
+  if (!Number.isSafeInteger(length) || length < 0 || length > 255 * Nh) {
+    throw new Error(`expand length: expected 0..${255 * Nh}`);
+  }
   return hkdfExpand(sha256, prk, info, length);
 }
 
@@ -102,6 +148,14 @@ export function expandLabel(
   length: number
 ): Uint8Array {
   const labelBytes = new TextEncoder().encode('OPAQUE-' + label);
+  assertBytes('expandLabel secret', secret, { min: 1 });
+  assertBytes('expandLabel context', context, { max: 0xff });
+  if (labelBytes.byteLength > 0xff) {
+    throw new Error('expandLabel label exceeds 255-byte encoding');
+  }
+  if (!Number.isSafeInteger(length) || length < 0 || length > 0xffff) {
+    throw new Error('expandLabel length exceeds 16-bit encoding');
+  }
   const customLabel = concat(
     i2osp(length, 2),
     i2osp(labelBytes.byteLength, 1),
@@ -128,8 +182,9 @@ export function deriveSecret(
  *
  * The library demos run with `stretchScrypt` (memory-hard, snappy at N=2^15).
  * The `Identity` stretch is the no-op KSF — used in the RFC 9807 Appendix C test vectors
- * and in protocol-debugging contexts. Production deployments should bump scrypt
- * N to 2^17 (OWASP 2023) or swap in Argon2id.
+ * and in protocol-debugging contexts. Production deployments must benchmark a
+ * current, reviewed password-storage profile; current OWASP guidance lists
+ * scrypt N=2^17, r=8, p=1 as one acceptable minimum configuration.
  */
 export type StretchFn = (input: Uint8Array) => Uint8Array;
 
@@ -152,7 +207,9 @@ export function deriveRandomizedPassword(
   oprfOutput: Uint8Array,
   stretchFn: StretchFn = stretchScrypt
 ): Uint8Array {
+  assertBytes('oprfOutput', oprfOutput, { exact: Nh });
   const stretched = stretchFn(oprfOutput);
+  assertBytes('stretch output', stretched, { exact: Nh });
   return extract(new Uint8Array(0), concat(oprfOutput, stretched));
 }
 
@@ -184,6 +241,8 @@ export function deriveKeyPair(seed: Uint8Array, info: Uint8Array): {
   secretKey: Uint8Array;
   publicKey: Uint8Array;
 } {
+  assertBytes('DeriveKeyPair seed', seed, { exact: Nseed });
+  assertBytes('DeriveKeyPair info', info, { max: MAX_IDENTITY_BYTES });
   const contextString = new TextEncoder().encode('OPRFV1-\x00-P256-SHA256');
   const dst = concat(new TextEncoder().encode('DeriveKeyPair'), contextString);
 
@@ -230,6 +289,8 @@ export function deriveOprfKeyPair(seed: Uint8Array): {
  * compressed encoding".
  */
 export function dh(scalar: Uint8Array, peerPoint: Uint8Array): Uint8Array {
+  assertP256SecretKey('DH scalar', scalar);
+  assertP256PublicKey('DH peer point', peerPoint);
   return p256.getSharedSecret(scalar, peerPoint, true);
 }
 
@@ -247,6 +308,9 @@ export async function aeadSeal(
   nonce: Uint8Array,
   plaintext: Uint8Array
 ): Promise<Uint8Array> {
+  assertBytes('AES-GCM key', key, { exact: 32 });
+  assertBytes('AES-GCM nonce', nonce, { exact: 12 });
+  assertBytes('AES-GCM plaintext', plaintext, { max: 1 << 20 });
   const k = await crypto.subtle.importKey('raw', key as BufferSource, 'AES-GCM', false, [
     'encrypt'
   ]);
@@ -264,6 +328,9 @@ export async function aeadOpen(
   nonce: Uint8Array,
   ciphertext: Uint8Array
 ): Promise<Uint8Array | null> {
+  assertBytes('AES-GCM key', key, { exact: 32 });
+  assertBytes('AES-GCM nonce', nonce, { exact: 12 });
+  assertBytes('AES-GCM ciphertext', ciphertext, { min: 16, max: (1 << 20) + 16 });
   try {
     const k = await crypto.subtle.importKey('raw', key as BufferSource, 'AES-GCM', false, [
       'decrypt'

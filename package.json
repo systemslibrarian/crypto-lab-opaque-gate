@@ -7,7 +7,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
-    "test:a11y": "playwright test"
+    "test:a11y": "playwright test",
+    "test:workflow": "node --test tests/workflow-controls.test.mjs"
   },
   "devDependencies": {
     "@axe-core/playwright": "^4.13.0",
