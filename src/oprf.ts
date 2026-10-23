@@ -17,6 +17,12 @@
  */
 
 import { p256_oprf, p256_hasher } from '@noble/curves/nist.js';
+import {
+  MAX_OPRF_INPUT_BYTES,
+  assertBytes,
+  assertP256PublicKey,
+  assertP256SecretKey
+} from './kdf';
 
 /** Server keypair for the OPRF. Public key is 33-byte compressed P-256. */
 export function generateOprfKey(): {
@@ -50,7 +56,9 @@ export function oprfBlind(
   input: Uint8Array,
   preChosenBlind?: Uint8Array
 ): { blind: Uint8Array; blinded: Uint8Array } {
+  assertBytes('OPRF private input', input, { max: MAX_OPRF_INPUT_BYTES });
   if (preChosenBlind) {
+    assertP256SecretKey('OPRF blind', preChosenBlind);
     const M = p256_hasher.hashToCurve(input, { DST: OPRF_HASH_TO_GROUP_DST });
     const r = bytesToScalar(preChosenBlind);
     const blinded = M.multiply(r).toBytes(true);
@@ -65,6 +73,8 @@ export function oprfBlindEvaluate(
   secretKey: Uint8Array,
   blinded: Uint8Array
 ): Uint8Array {
+  assertP256SecretKey('OPRF secret key', secretKey);
+  assertP256PublicKey('OPRF blinded element', blinded);
   return p256_oprf.oprf.blindEvaluate(secretKey, blinded);
 }
 
@@ -74,6 +84,9 @@ export function oprfFinalize(
   blind: Uint8Array,
   evaluated: Uint8Array
 ): Uint8Array {
+  assertBytes('OPRF private input', input, { max: MAX_OPRF_INPUT_BYTES });
+  assertP256SecretKey('OPRF blind', blind);
+  assertP256PublicKey('OPRF evaluated element', evaluated);
   return p256_oprf.oprf.finalize(input, blind, evaluated);
 }
 
@@ -85,7 +98,9 @@ export async function oprfClientBlind(password: string): Promise<{
   blind: Uint8Array;
   blindingFactor: Uint8Array;
 }> {
+  if (typeof password !== 'string') throw new TypeError('password: expected string');
   const input = new TextEncoder().encode(password);
+  assertBytes('password', input, { min: 1, max: MAX_OPRF_INPUT_BYTES });
   const { blind, blinded } = oprfBlind(input);
   return { blind: blinded, blindingFactor: blind };
 }
@@ -102,6 +117,8 @@ export async function oprfClientUnblind(
   evaluated: Uint8Array,
   blindingFactor: Uint8Array
 ): Promise<Uint8Array> {
+  if (typeof password !== 'string') throw new TypeError('password: expected string');
   const input = new TextEncoder().encode(password);
+  assertBytes('password', input, { min: 1, max: MAX_OPRF_INPUT_BYTES });
   return oprfFinalize(input, blindingFactor, evaluated);
 }

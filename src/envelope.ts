@@ -13,7 +13,8 @@
  *   (sk, pk) = DeriveKeyPair(seed, "OPAQUE-DeriveDiffieHellmanKeyPair")
  *   envelope = envelope_nonce || HMAC(auth_key, envelope_nonce || cleartext_creds)
  *
- * Same password ⇒ same `randomized_pwd` ⇒ same envelope-derived keypair.
+ * The same password and OPRF key produce the same `randomized_pwd`; each fresh
+ * envelope nonce produces fresh envelope-derived credentials.
  */
 
 import {
@@ -30,7 +31,12 @@ import {
   stretchScrypt,
   deriveRandomizedPassword,
   deriveDiffieHellmanKeyPair,
-  deriveOprfKeyPair
+  deriveOprfKeyPair,
+  MAX_OPRF_INPUT_BYTES,
+  MAX_IDENTITY_BYTES,
+  assertBytes,
+  assertP256PublicKey,
+  assertP256SecretKey
 } from './kdf';
 import {
   oprfBlind,
@@ -49,7 +55,7 @@ const LABEL_PRIVATE_KEY = new TextEncoder().encode('PrivateKey');
 const LABEL_MASKING_KEY = new TextEncoder().encode('MaskingKey');
 const LABEL_OPRF_KEY = new TextEncoder().encode('OprfKey');
 
-/** Server's per-user record. RFC 9807 stores no password-related material here. */
+/** Demo server record: no plaintext password or conventional password hash. */
 export interface RegistrationRecord {
   credentialIdentifier: string;
   clientPublicKey: Uint8Array; // 33 bytes (compressed)
@@ -86,6 +92,10 @@ export function createCleartextCredentials(
   clientIdentity: Uint8Array,
   clientPublicKey: Uint8Array
 ): Uint8Array {
+  assertP256PublicKey('server public key', serverPublicKey);
+  assertP256PublicKey('client public key', clientPublicKey);
+  assertBytes('server identity', serverIdentity, { max: MAX_IDENTITY_BYTES });
+  assertBytes('client identity', clientIdentity, { max: MAX_IDENTITY_BYTES });
   const sid = serverIdentity.byteLength === 0 ? serverPublicKey : serverIdentity;
   const cid = clientIdentity.byteLength === 0 ? clientPublicKey : clientIdentity;
   const sidLen = new Uint8Array([(sid.byteLength >> 8) & 0xff, sid.byteLength & 0xff]);
@@ -103,6 +113,11 @@ export function deriveOprfKey(
   oprfSeed: Uint8Array,
   credentialIdentifier: Uint8Array
 ): Uint8Array {
+  assertBytes('OPRF seed', oprfSeed, { exact: Nseed });
+  assertBytes('credential identifier', credentialIdentifier, {
+    min: 1,
+    max: MAX_IDENTITY_BYTES
+  });
   const ikm = expand(
     oprfSeed,
     concat(credentialIdentifier, LABEL_OPRF_KEY),
@@ -126,8 +141,15 @@ export function store(
   clientIdentity: Uint8Array,
   options: { envelopeNonce?: Uint8Array } = {}
 ): StoreResult {
+  assertBytes('randomized password', randomizedPwd, { exact: Nh });
+  assertP256PublicKey('server public key', serverPublicKey);
+  assertBytes('server identity', serverIdentity, { max: MAX_IDENTITY_BYTES });
+  assertBytes('client identity', clientIdentity, { max: MAX_IDENTITY_BYTES });
+  if (options.envelopeNonce !== undefined) {
+    assertBytes('envelope nonce', options.envelopeNonce, { exact: Nn });
+  }
   const envelopeNonce =
-    options.envelopeNonce ?? crypto.getRandomValues(new Uint8Array(Nn));
+    options.envelopeNonce?.slice() ?? crypto.getRandomValues(new Uint8Array(Nn));
 
   const maskingKey = expand(randomizedPwd, LABEL_MASKING_KEY, Nh);
   const authKey = expand(
@@ -175,9 +197,11 @@ export function recover(
   clientPublicKey: Uint8Array;
   exportKey: Uint8Array;
 } {
-  if (envelope.byteLength !== ENVELOPE_LENGTH) {
-    throw new Error('Recover: envelope length mismatch');
-  }
+  assertBytes('randomized password', randomizedPwd, { exact: Nh });
+  assertP256PublicKey('server public key', serverPublicKey);
+  assertBytes('envelope', envelope, { exact: ENVELOPE_LENGTH });
+  assertBytes('server identity', serverIdentity, { max: MAX_IDENTITY_BYTES });
+  assertBytes('client identity', clientIdentity, { max: MAX_IDENTITY_BYTES });
   const envelopeNonce = envelope.slice(0, Nn);
   const expectedTag = envelope.slice(Nn, Nn + Nm);
 
@@ -232,7 +256,14 @@ export async function register(
     blind?: Uint8Array; // pre-chosen OPRF blind for vector testing
   } = {}
 ): Promise<{ record: RegistrationRecord; exportKey: Uint8Array }> {
+  if (typeof password !== 'string') throw new TypeError('password: expected string');
+  if (typeof username !== 'string') throw new TypeError('username: expected string');
   const passwordBytes = new TextEncoder().encode(password);
+  const usernameBytes = new TextEncoder().encode(username);
+  assertBytes('password', passwordBytes, { min: 1, max: MAX_OPRF_INPUT_BYTES });
+  assertBytes('username', usernameBytes, { min: 1, max: MAX_IDENTITY_BYTES });
+  assertP256SecretKey('OPRF key', oprfKey);
+  assertP256PublicKey('server public key', serverPublicKey);
   const stretchFn = options.stretchFn ?? stretchScrypt;
 
   const { blind, blinded } = oprfBlind(passwordBytes, options.blind);
@@ -243,7 +274,9 @@ export async function register(
 
   const serverIdentity = options.serverIdentity ?? new Uint8Array(0);
   const clientIdentity =
-    options.clientIdentity ?? new TextEncoder().encode(username);
+    options.clientIdentity ?? usernameBytes;
+  assertBytes('server identity', serverIdentity, { max: MAX_IDENTITY_BYTES });
+  assertBytes('client identity', clientIdentity, { max: MAX_IDENTITY_BYTES });
 
   const { envelope, clientPublicKey, maskingKey, exportKey } = store(
     randomizedPwd,
@@ -259,7 +292,7 @@ export async function register(
       clientPublicKey,
       maskingKey,
       envelope,
-      oprfKey
+      oprfKey: oprfKey.slice()
     },
     exportKey
   };
