@@ -7,7 +7,7 @@ import {
   Npk,
   stretchIdentity
 } from '../src/kdf';
-import { generateOprfKey, oprfBlind } from '../src/oprf';
+import { generateOprfKey, oprfBlind, oprfBlindEvaluate, oprfFinalize } from '../src/oprf';
 import { recover, register } from '../src/envelope';
 import {
   clientLoginStep1,
@@ -29,6 +29,42 @@ describe('fail-closed protocol boundaries', () => {
     expect(() => oprfBlind(new Uint8Array([1]), new Uint8Array(32))).toThrow(
       /invalid P-256 secret scalar/i
     );
+  });
+
+  // oprfBlindEvaluate and oprfFinalize are the two WIRE-FACING OPRF calls: each
+  // receives an element the peer sent. Their validation was unguarded -- a
+  // sweep that removed each assertion in turn and reran the suite found both
+  // functions' checks could be deleted with all 21 tests still green, while
+  // oprfBlind's equivalents at lines 59 and 61 were already covered above.
+  it('rejects a malformed blinded element from the client', () => {
+    const { oprfPrivate } = generateOprfKey();
+    expect(() => oprfBlindEvaluate(oprfPrivate, new Uint8Array(Npk))).toThrow(
+      /invalid compressed P-256 point/i
+    );
+    expect(() => oprfBlindEvaluate(oprfPrivate, new Uint8Array(Npk - 1))).toThrow(
+      /expected 33 bytes, got 32/i
+    );
+    // ...and a malformed server key, which would otherwise reach the curve code.
+    const { blinded } = oprfBlind(new Uint8Array([1]));
+    expect(() => oprfBlindEvaluate(new Uint8Array(32), blinded)).toThrow(
+      /invalid P-256 secret scalar/i
+    );
+  });
+
+  it('rejects a malformed evaluated element from the server', () => {
+    const { blind } = oprfBlind(new Uint8Array([1]));
+    expect(() => oprfFinalize(new Uint8Array([1]), blind, new Uint8Array(Npk))).toThrow(
+      /invalid compressed P-256 point/i
+    );
+    const { oprfPrivate } = generateOprfKey();
+    const { blinded } = oprfBlind(new Uint8Array([1]));
+    const evaluated = oprfBlindEvaluate(oprfPrivate, blinded);
+    expect(() => oprfFinalize(new Uint8Array([1]), new Uint8Array(32), evaluated)).toThrow(
+      /invalid P-256 secret scalar/i
+    );
+    expect(() =>
+      oprfFinalize(new Uint8Array(MAX_OPRF_INPUT_BYTES + 1), blind, evaluated)
+    ).toThrow(/limit/i);
   });
 
   it('rejects malformed serialized curve points rather than carrying them forward', () => {
