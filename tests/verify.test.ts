@@ -76,7 +76,7 @@ async function runFullLogin(password: string, username: string) {
   };
 }
 
-describe('RFC 9807 OPAQUE protocol properties (10 checks)', () => {
+describe('RFC 9807 OPAQUE protocol properties (12 checks)', () => {
   it('1. TypeScript strict-mode build (imports compile under vitest/tsc)', () => {
     // If this module compiled and imported the src/ modules, strict-mode
     // compilation held. This mirrors the original suite's build marker.

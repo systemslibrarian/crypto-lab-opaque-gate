@@ -2,11 +2,11 @@
 
 ## What It Is
 
-A browser-based educational demo of **OPAQUE** (RFC 9807, July 2025) — an Augmented Password-Authenticated Key Exchange (aPAKE) where **the server never sees the password**, not during registration, not during login, not ever.
+A browser-based educational demo of **OPAQUE** (RFC 9807, July 2025) — an Augmented Password-Authenticated Key Exchange (aPAKE) whose protocol messages do not reveal the password to the server. This demo simulates both sides in one browser.
 
-It opens with a one-screen **map of the whole protocol** (`password → OPRF → RWD → envelope → keys → 3DH → session`, each stage clickable to jump to the exhibit that runs it) so a newcomer meets the three stacked primitives in dependency order before diving into any one of them.
+It opens with a one-screen **map of the whole protocol** (`password → OPRF output → randomized_password → envelope → keys → 3DH → session`, each stage clickable to jump to the exhibit that runs it) so a newcomer meets the three stacked primitives in dependency order before diving into any one of them.
 
-This is the most practically relevant password authentication scheme for the post-hash-compromise era:
+It is a practically relevant password-authentication design for reducing the value of password databases after compromise:
 
 - **Registration**: Client derives credentials from the password-assisted OPRF and authenticates them with an HMAC. In internal mode, the server stores an envelope containing only a nonce and HMAC tag, plus the OPRF evaluation key and client's public key. Zero password bytes and no envelope ciphertext.
 
@@ -17,38 +17,48 @@ This is the most practically relevant password authentication scheme for the pos
 **Key property**: If the server database is breached:
 - Attacker has an authenticated envelope (nonce + HMAC tag, no ciphertext) + OPRF key
 - Offline dictionary attack _is_ possible, but each guess costs one OPRF evaluation plus one run of the key-stretching function. Exhibit 4 measures that rate in your own browser rather than quoting a figure; this build uses scrypt N=2^15, r=8, which is memory-hard in a way bcrypt is not, so the two are not interchangeable cost units.
-- No plaintext password exposed; no rainbow tables work (OPRF key varies per user)
-- Pre-computation attacks are **impossible**
+- No plaintext password or conventional password hash is exposed; a secret OPRF
+  key makes a precomputed table unavailable before compromise and scopes later
+  guesses to that credential.
+- OPAQUE resists the pre-computation attack defined by RFC 9807, but it does not
+  make the stolen record useless: after the record and OPRF key leak, an attacker
+  can make a fresh, per-user offline dictionary attack.
 
 ## When to Use It
 
 - Replacing bcrypt+TLS password authentication in applications where database breaches are a concern
 - Patron portal authentication in library systems (ILS, self-checkout, staff login)
 - Understanding why current password hashing (even modern schemes) still exposes credentials to offline attacks
-- Any system where you want to eliminate "password compromise in a breach" from the threat model
+- Systems that should keep plaintext passwords and reusable password hashes out
+  of the server while forcing a database attacker to begin per-user guessing
+  after compromise; OPAQUE does not eliminate weak-password recovery
 - Do NOT deploy this in production — it is a teaching demo with both client and server simulated in one browser; use a vetted PAKE library in real systems.
 
 ## Live Demo
 
 **[systemslibrarian.github.io/crypto-lab-opaque-gate](https://systemslibrarian.github.io/crypto-lab-opaque-gate/)**
 
-The demo simulates both client and server in one browser. It opens with a clickable **map of the whole protocol**, then five interactive exhibits: why plaintext and salted-hash password auth is broken (grounded in your own registered envelope), a live obliviousness demo where re-running the OPRF with a fresh blinding factor changes the wire value but not the recovered secret, a *stepped* KE1 → KE2 → KE3 login handshake you walk one message at a time — with cards that cross the CLIENT ↔ SERVER gap, tappable definitions on the jargon in each byte-grid label, a wrong-password path where you watch the envelope MAC fail, and — on success — a **drawn 3DH diagram** (four keypairs, three labeled pairings feeding one session key) plus a *poke-the-forward-secrecy* button, a server-breach simulation that attacks your real envelope and measures the offline-guess cost live from the browser's actual scrypt, and a tour of real-world deployments.
+The demo simulates both client and server in one browser. It opens with a clickable **map of the whole protocol**, then five interactive exhibits: why plaintext and salted-hash password auth is broken (grounded in your own registered envelope), a live obliviousness demo where re-running the OPRF with a fresh blinding factor changes the wire value but not the recovered secret, a *stepped* KE1 → KE2 → KE3 login handshake you walk one message at a time — with cards that cross the CLIENT ↔ SERVER gap, tappable definitions on the jargon in each byte-grid label, a wrong-password path where credential-response or envelope validation fails, and — on success — a **drawn 3DH diagram** (four keypairs, three labeled pairings feeding one session key) plus a *poke-the-forward-secrecy* button, a server-breach simulation that attacks your real envelope and measures the offline-guess cost live from the browser's actual scrypt, and a tour of the publication and adjacent systems.
 
 ## What Can Go Wrong
 
-- **Validated, but not audited.** Every named intermediate and output matches the CFRG `vectors.json` for P256-SHA256 byte-for-byte (`tests/test-vectors.test.ts` — 16 checks against a Real vector plus 1 against a Fake-login vector), and the spec-derived protocol properties pass (`tests/verify.test.ts` — 10 checks). These run under `npm test` (vitest) and are enforced in CI on every push, so a regression in any derivation fails the build. That's strong evidence each derivation matches RFC 9807, but it isn't a substitute for the testing, fuzzing, constant-time review, and side-channel analysis a production deployment needs. Use a vetted PAKE library in real systems.
-- **Offline attack surface with OPRF key compromise.** If an attacker gets the server's OPRF key for a user (via database breach), they can try offline password guesses. Each guess costs one OPRF evaluation plus one `stretch()` (scrypt N=2^15 here; Exhibit 4 times real guesses in your browser instead of quoting a number). OPAQUE's advantages: pre-computation is impossible (the OPRF key varies per user), no plaintext password exposure, mutual authentication + forward secrecy.
+- **Validated, but not audited.** Every named intermediate and output matches the CFRG `vectors.json` for P256-SHA256 byte-for-byte (`tests/test-vectors.test.ts` — 16 checks against a Real vector plus 1 against a Fake-login vector), and the spec-derived protocol properties pass (`tests/verify.test.ts` — 12 checks). These run under `npm test` (vitest) and are enforced in CI on every push, so a regression in any derivation fails the build. That's strong evidence each derivation matches RFC 9807, but it isn't a substitute for the testing, fuzzing, constant-time review, and side-channel analysis a production deployment needs. Use a vetted PAKE library in real systems.
+- **Offline attack surface with OPRF key compromise.** If an attacker gets the server's OPRF key and credential record for a user, they can try offline password guesses. Each guess costs one OPRF evaluation plus one `stretch()` (scrypt N=2^15 here; Exhibit 4 times real guesses in your browser instead of quoting a production rate). OPAQUE's advantage is resistance to work done before compromise, not immunity afterward: the unpredictable key prevents reusable advance tables, while the password's entropy and KSF cost govern post-compromise guessing.
 - **Registration requires TLS.** OPAQUE doesn't bootstrap trust from nothing. First registration assumes the client can trust the server (via TLS). Subsequent logins are password-only. By design: RFC 9807 §3.2 states registration is the only stage requiring a server-authenticated channel with confidentiality and integrity. Real deployments may layer additional factors on top.
 - **No backend in this demo.** All crypto runs client-side; both "sides" are simulated in the same browser. Real deployments need a server to store registration records, perform OPRF evaluations (server's OPRF key never leaves), enforce rate limits to slow online attacks, and possibly use an HSM to protect OPRF keys.
 - **Only the P256-SHA256 suite is validated.** The CFRG publishes vectors for ristretto255-SHA512 as well; supporting them requires generalizing this codebase across OPRF groups. The framework in `tests/test-vectors.test.ts` is ready for them.
 
-## Real-World Usage
+## Publication and Adjacent Systems
 
-- **RFC 9807** was published by the IRTF Crypto Forum Research Group in July 2025. Authors: Daniel Bourdrez, Hugo Krawczyk (AWS; also co-designed HMAC, HKDF, IKE and SIGMA), Kevin Lewi (Meta, WhatsApp E2E Encrypted Backups), and Christopher Wood (Cloudflare). The underlying OPAQUE construction is due to Jarecki, Krawczyk and Xu (EUROCRYPT 2018).
-- **WhatsApp** (2021+): End-to-End Encrypted Backups gate the backup key behind a user password held in an HSM-backed Backup Key Vault. Meta's public engineering write-up describes the design without naming OPAQUE, so treat this as adjacent rather than a confirmed deployment; RFC 9807 co-author Kevin Lewi is at Meta.
-- **Cloudflare**: Published OPAQUE research and a public interactive demo. Not a shipped production login path.
-- **Apple Private Cloud Compute**: A neighbour rather than an example — PCC authorizes requests with single-use RSA Blind Signatures (RFC 9474), not an OPRF.
-- **1Password**: Has published research on OPAQUE for vault unlock; ships SRP today.
+- **[RFC 9807](https://www.rfc-editor.org/rfc/rfc9807.html)** was published by the IRTF Crypto Forum Research Group in July 2025 as an Informational RFC, not an Internet Standards Track specification. Authors: Daniel Bourdrez, Hugo Krawczyk (AWS), Kevin Lewi (Meta), and Christopher Wood (Cloudflare). The underlying OPAQUE construction is due to Jarecki, Krawczyk and Xu (EUROCRYPT 2018).
+- **[WhatsApp](https://engineering.fb.com/2021/09/10/security/whatsapp-e2ee-backups/)** (2021+): End-to-End Encrypted Backups gate the backup key behind a user password and an HSM-backed Backup Key Vault. Meta's public engineering write-up describes the design without naming OPAQUE, so treat this as adjacent rather than a confirmed deployment.
+- **[Cloudflare](https://blog.cloudflare.com/opaque-oblivious-passwords/)**: Published OPAQUE research and a public proof-of-concept demo. It is not evidence of a shipped production login path.
+- **[Apple Private Cloud Compute](https://security.apple.com/documentation/private-cloud-compute/nontargetability)**: A neighbour rather than an example — PCC authorizes requests with single-use RSA Blind Signatures, not an OPRF.
+- **[1Password](https://1password.com/files/1Password-White-Paper.pdf)**: An
+  adjacent PAKE deployment, not an OPAQUE deployment. Its published security
+  design uses SRP for password-and-Secret-Key account authentication, and it
+  [documents CPace](https://1password.com/blog/unlock-sso-deep-dive) for an SSO
+  device-enrollment flow.
 
 ## How to Run Locally
 
@@ -70,14 +80,15 @@ npm run dev
 
 - **Vite** + TypeScript (strict mode)
 - **[@noble/curves](https://github.com/paulmillr/noble-curves)** for the
-  P-256 ECC and the RFC 9497 OPRF (audited, ~25 KB gzipped contribution)
+  P-256 ECC and the RFC 9497 OPRF
 - **[@noble/hashes](https://github.com/paulmillr/noble-hashes)** for HKDF,
   HMAC, and scrypt
 - **WebCrypto** for randomness (`crypto.getRandomValues`)
 - **Vanilla CSS**
 - Deployable to **GitHub Pages** (no backend)
 - Mobile-first, responsive layout
-- WCAG 2.1 AA compliant
+- Automated WCAG 2.1 A/AA checks across exercised states (not a claim of full
+  conformance or a substitute for manual assistive-technology testing)
 
 ## How OPAQUE Works
 
@@ -89,7 +100,7 @@ The server has a secret key **k**. The client has a password **pwd**. An OPRF co
 2. **Server evaluates**: Compute evaluated = F(k, blinded), send back
 3. **Client unblinds**: Compute rwd = F(k, pwd) without ever learning k or sending pwd
 
-The server sees only _blinded_ values (look like random noise). The client computes the final key _rwd_.
+The server sees only _blinded_ values. The client computes the raw OPRF output, then derives RFC 9807's `randomized_password` from it and the key-stretching output.
 
 **Implementation**: real RFC 9497 OPRF on NIST P-256 with hash-to-curve
 (SSWU map), via `@noble/curves`. The blind, evaluate, and unblind steps
@@ -122,7 +133,9 @@ recovery. The `stretch` step (scrypt N=2^15 by default) is what makes
 each guess in an offline attack expensive.
 
 Server stores: `{credential_identifier, client_public_key, masking_key, envelope, oprf_key}`.
-**No password material on the server.**
+There is no plaintext password or conventional password hash in that record,
+but the record plus OPRF key is still a verifier for a per-user offline attack
+after compromise.
 
 ### Component 3: 3DH AKE (RFC 9807 §6, internal mode)
 
@@ -178,21 +191,21 @@ Breach: Authenticated envelope (nonce + HMAC tag) + OPRF key
 Auth failure: Attacker cannot forge login without correct password
 ```
 
-**Practical path**: SirsiDynix Symphony, Innovative Interfaces Polaris, EBSCO Discovery Service could integrate OPAQUE. Requires vendor adoption; no standards barrier (RFC 9807 is published).
+**Practical path**: SirsiDynix Symphony, Innovative Interfaces Polaris, and EBSCO Discovery Service could integrate OPAQUE. That would require vendor design, implementation and review; RFC 9807 is a published CFRG Informational specification, not a deployment certification.
 
 ## Exhibit Tour
 
-The demo opens with a **Start Here** map of the whole protocol — `password → OPRF → RWD → envelope → keys → 3DH → session` laid out top to bottom, with the three operations (OPRF, envelope, 3DH) boxed and clickable to jump straight to the exhibit that runs each one. It states the OPRF's *purpose* ("turn a weak password into a strong key the server can't derive") up front, before the mechanics, so the primitives are met in dependency order. Below it are five interactive exhibits:
+The demo opens with a **Start Here** map of the whole protocol — `password → OPRF output → randomized_password → envelope → keys → 3DH → session` laid out top to bottom, with the three operations (OPRF, envelope, 3DH) boxed and clickable to jump straight to the exhibit that runs each one. It states the OPRF's purpose up front, before the mechanics, so the primitives are met in dependency order. Below it are five interactive exhibits:
 
 1. **Why Current Password Auth Is Broken**: Compare plaintext, salted-hash, and OPAQUE breach outcomes. Once you register in Exhibit 3, the OPAQUE row shows *your own* stored envelope bytes — the exact record the server holds — rather than a canned string.
 
-2. **The OPRF**: Leads with a plain statement of *what this stage is for*, then a one-picture "locked box" primer plus a live obliviousness demo. Press **Run OPRF**, then **Run again (fresh r)**, and watch side-by-side runs: the blinding factor `r` and the on-the-wire **Blind** change every time (changed bytes highlighted), while the recovered **RWD** stays byte-for-byte identical (also highlighted) — so the server gets fresh noise it can't correlate, yet the client always recovers the same secret. Expand-on-demand definitions for RWD, envelope, 3DH, aPAKE, and HKDF-Extract.
+2. **The OPRF**: Leads with a plain statement of *what this stage is for*, then a one-picture "locked box" primer plus a live obliviousness demo. Press **Run OPRF**, then **Run again (fresh r)**, and watch side-by-side runs: the blinding factor `r` and the on-the-wire **Blind** change every time (changed bytes highlighted), while the recovered raw OPRF output stays byte-for-byte identical (also highlighted) — so the server gets fresh noise it cannot directly correlate, yet the client recovers the same output. Expand-on-demand definitions distinguish that raw output from RFC 9807's derived `randomized_password`.
 
-3. **Registration and the Login Handshake**: Registration shows the client handing the server only a public key, masking key, and envelope (no password, no hash). Login is **stepped**: walk KE1 → KE2 → KE3 one message at a time as each card animates *across* the gap from the sending column to the receiving one, listing what it carries *and what it never carries*. Jargon in the byte-grid labels (`masked_response`, `evaluated_message`, `keyshare`, `preamble`, …) is **tappable** — click a term for an inline definition at the point of confusion. A **wrong-password** checkbox lets you watch envelope recovery fail — the MAC mismatch aborts the handshake at KE3 with the specific broken step named. On a successful login the exhibit **draws the 3DH**: the client and server static + ephemeral keypairs as four labeled dots, the three DH pairings as connecting lines (each labeled with what it buys — `dh1` = forward secrecy, `dh2`/`dh3` = mutual auth) feeding one session-key box, with the real shared-secret bytes shown. A **"Leak the session key and run the attack"** button then turns the forward-secrecy claim into an experiment rather than a paragraph: it runs a *second* complete login, seals traffic under each session key with AES-256-GCM, hands a simulated attacker the leaked session key **and** both long-term secret keys **and** the recorded transcript, and reports which tags actually verified. The attacker rebuilds `dh2` and `dh3` byte-for-byte and still cannot open the second session, because `dh1` needed two ephemeral private keys that no longer exist. The same key schedule is then re-run over a static-only ikm (`DH(client_static, server_static)`, no ephemeral term) and the same attacker decrypts both sessions — the negative case, measured rather than described.
+3. **Registration and the Login Handshake**: Registration shows the client handing the server only a public key, masking key, and envelope (no password, no conventional password hash). Login is **stepped**: walk KE1 → KE2 → KE3 one message at a time as each card animates *across* the gap from the sending column to the receiving one, listing what it carries *and what it never carries*. Jargon in the byte-grid labels (`masked_response`, `evaluated_message`, `keyshare`, `preamble`, …) is **tappable** — click a term for an inline definition at the point of confusion. A **wrong-password** checkbox lets you watch credential-response validation or envelope authentication abort the handshake at KE3 with the specific broken step named. On a successful login the exhibit **draws the 3DH**: the client and server static + ephemeral keypairs as four labeled dots, the three DH pairings as connecting lines (each labeled with what it buys — `dh1` = forward secrecy, `dh2`/`dh3` = mutual auth) feeding one session-key box, with the real shared-secret bytes shown. A **"Leak the session key and run the attack"** button then turns the forward-secrecy claim into an experiment rather than a paragraph: it runs a *second* complete login, seals traffic under each session key with AES-256-GCM, hands a simulated attacker the leaked session key **and** both long-term secret keys **and** the recorded transcript, and reports which tags actually verified. The attacker rebuilds `dh2` and `dh3` byte-for-byte and still cannot open the second session, because `dh1` needed two ephemeral private keys that no longer exist. The same key schedule is then re-run over a static-only ikm (`DH(client_static, server_static)`, no ephemeral term) and the same attacker decrypts both sessions — the negative case, measured rather than described.
 
-4. **Server Breach Simulation**: Actually runs four attacks against the envelope you registered in Exhibit 3 and prints what happened, not a canned verdict. Attack 1 calls `recover()` with a random RWD and shows the thrown MAC error. Attack 2 is a real offline dictionary attack: several wrong candidates plus the true password, each taken all the way through OPRF evaluation, `randomized_pwd` derivation and `recover()`, with the wall-clock per-guess rate measured from those guesses. Attack 3 evaluates the same password under two different per-user OPRF keys and compares the outputs. Attack 4 forges a KE2 from the stolen record with an attacker-generated server keypair and hands it to the real `clientLoginStep3`. Each verdict is derived from the outcome, so a broken build would report a successful attack.
+4. **Server Breach Simulation**: Actually runs four attacks against the envelope you registered in Exhibit 3 and prints what happened, not a canned verdict. Attack 1 calls `recover()` with a random `randomized_password` and shows the thrown authentication error. Attack 2 is a real offline dictionary attack: several wrong candidates plus the true password, each taken all the way through OPRF evaluation, `randomized_password` derivation and `recover()`, with the wall-clock per-guess rate measured from those guesses. Attack 3 evaluates the same password under two different per-user OPRF keys and compares the outputs. Attack 4 forges a KE2 from the stolen record with an attacker-generated server keypair and hands it to the real `clientLoginStep3`. Each verdict is derived from the outcome, so a broken build would report a successful attack.
 
-5. **Real-World Deployments**: WhatsApp, Cloudflare, Apple, 1Password. Library patron privacy impact.
+5. **Published and Adjacent Systems**: RFC 9807, WhatsApp, Cloudflare, Apple, and 1Password are labeled according to what their public material actually establishes. The exhibit then applies OPAQUE's security properties and residual offline-guessing risk to library patron privacy.
 
 ## No Math.random()
 
@@ -236,21 +249,31 @@ tests/                        (run by `npm test`, never shipped in the bundle)
 
 ## Security Considerations
 
-- **Password strength**: OPAQUE assumes strong passwords. Weak passwords can be cracked offline (same as bcrypt).
+- **Password strength**: OPAQUE does not remove password guessing. After the
+  credential record and OPRF key are compromised, weak passwords can be
+  recovered with a per-user offline attack; unlike an ordinary public salt,
+  the secret OPRF key prevents an attacker from preparing that mapping in
+  advance.
 - **OPRF key protection**: Server OPRF key (k) must be protected. If leaked, offline attacks become practical. Use HSM or key management service in production.
 - **TLS**: All communication should still be over TLS (OPAQUE is not a replacement for transport security).
-- **Rate limiting**: Server should limit login attempts to slow offline attacks.
-- **Session key reuse**: Session keys are ephemeral and discarded after use. They don't protect across sessions.
+- **Rate limiting**: Server-side limits slow online guesses and OPRF-oracle
+  abuse. They cannot throttle an attacker making offline guesses from a stolen
+  credential record and OPRF key.
+- **Session keys and erasure**: Each login derives a new session key. Forward
+  secrecy depends on erasing the ephemeral private keys; compromise of one
+  session key does not by itself expose a different session.
 
-## WCAG 2.1 AA Compliance
+## Automated WCAG 2.1 A/AA Checks
 
 - Keyboard navigation (all buttons, inputs, tabs focusable)
-- `aria-label` on all inputs and code blocks
+- Programmatic labels on inputs and byte-grid regions
 - `role="alert"` on errors
-- High contrast dark theme
-- `prefers-color-scheme` NOT used (explicit toggle instead)
-- Mobile-first responsive design (320px+)
+- Dark-theme contrast checks across the driven application states
+- Reduced-motion and 380px reflow checks
 - Focus outlines on all interactive elements
+
+These automated gates cover the states they drive; they are not a full WCAG
+conformance audit or manual assistive-technology evaluation.
 
 ## Repository Description (GitHub)
 
@@ -258,8 +281,8 @@ Browser-based OPAQUE aPAKE demo (RFC 9807, July 2025). Real RFC 9497
 OPRF on P-256 via `@noble/curves`. RFC 9807-compliant envelope (HMAC
 tag + derived static key, no AES), full 3DH key schedule with separate
 MAC keys per direction. Validated byte-for-byte against the CFRG
-P256-SHA256 test vectors (Real and Fake-login). Password never touches
-the server.
+P256-SHA256 test vectors (Real and Fake-login). Protocol messages do not reveal
+the password to the server; this teaching app simulates both sides in one browser.
 
 ## Topics
 
