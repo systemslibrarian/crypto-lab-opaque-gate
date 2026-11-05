@@ -117,6 +117,11 @@ jobs:
             echo "::error::gate passed, but the Dependabot PR did not merge after 3 attempts"
             exit 1
           fi
+          # A merge made with GITHUB_TOKEN raises no push event -- GitHub suppresses
+          # them so workflows cannot retrigger themselves -- so deploy would never run
+          # and the site would keep serving the previous build. Ask for it explicitly;
+          # a workflow_dispatch through the API is not suppressed. The dispatched run
+          # is the same gate-then-deploy pipeline, so a bad merge still ships nothing.
           if ! gh workflow run deploy.yml --repo "$GITHUB_REPOSITORY" --ref main; then
             echo "::error::merge landed, but the required deploy workflow did not dispatch"
             exit 1
