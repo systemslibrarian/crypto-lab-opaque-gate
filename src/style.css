@@ -965,14 +965,18 @@ footer p {
 /* Related-demos links sit inline in a paragraph. Give them an accessible
    accent color (default UA link blue fails contrast on the near-black footer)
    plus a persistent underline so they're distinguishable by more than color
-   alone (WCAG 1.4.1 link-in-text-block). */
-footer a {
+   alone (WCAG 1.4.1 link-in-text-block). The Exhibit 5 source citation
+   link inside a deployment card shares the same treatment. */
+footer a,
+.deployment a {
   color: var(--color-accent);
   text-decoration: underline;
 }
 
 footer a:hover,
-footer a:focus {
+footer a:focus,
+.deployment a:hover,
+.deployment a:focus {
   color: var(--color-accent-secondary);
 }
 

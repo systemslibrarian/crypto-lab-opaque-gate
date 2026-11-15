@@ -20,6 +20,8 @@ test('breach and deployment claims preserve the demonstrated limitations', async
   const body = page.locator('body');
   await expect(body).toContainText('per-user offline guessing attack');
   await expect(body).toContainText('neither is evidence of an OPAQUE deployment');
+  await expect(body).toContainText('retrieve K is the OPAQUE protocol');
+  await expect(body).not.toContainText('does not name OPAQUE');
   await expect(body).not.toContainText('stolen database useless');
   await expect(body).not.toContainText('whole defence');
   await expect(body).not.toContainText('strong one is out of reach');

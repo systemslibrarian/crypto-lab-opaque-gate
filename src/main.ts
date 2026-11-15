@@ -2011,9 +2011,11 @@ function createExhibit5(): HTMLElement {
     <div class="deployment">
       <strong>WhatsApp (2021+)</strong><br />
       End-to-End Encrypted Backups<br />
-      Password-gated key retrieval from an HSM-backed Backup Key Vault. Meta's public
-      write-up describes the design but does not name OPAQUE; RFC 9807 co-author
-      Kevin Lewi is at Meta.
+      Password-gated key retrieval from an HSM-based Backup Key Vault. WhatsApp's own
+      <a href="https://www.whatsapp.com/security/WhatsApp_Security_Encrypted_Backups_Whitepaper.pdf">security
+      white paper</a> (September 2021) names the protocol: "At the heart of the key K
+      registration and an ability to later securely retrieve K is the OPAQUE protocol."
+      A confirmed, documented OPAQUE deployment.
     </div>
     <div class="deployment">
       <strong>Cloudflare</strong><br />

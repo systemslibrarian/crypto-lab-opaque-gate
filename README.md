@@ -51,7 +51,7 @@ The demo simulates both client and server in one browser. It opens with a clicka
 ## Publication and Adjacent Systems
 
 - **[RFC 9807](https://www.rfc-editor.org/rfc/rfc9807.html)** was published by the IRTF Crypto Forum Research Group in July 2025 as an Informational RFC, not an Internet Standards Track specification. Authors: Daniel Bourdrez, Hugo Krawczyk (AWS), Kevin Lewi (Meta), and Christopher Wood (Cloudflare). The underlying OPAQUE construction is due to Jarecki, Krawczyk and Xu (EUROCRYPT 2018).
-- **[WhatsApp](https://engineering.fb.com/2021/09/10/security/whatsapp-e2ee-backups/)** (2021+): End-to-End Encrypted Backups gate the backup key behind a user password and an HSM-backed Backup Key Vault. Meta's public engineering write-up describes the design without naming OPAQUE, so treat this as adjacent rather than a confirmed deployment.
+- **[WhatsApp](https://www.whatsapp.com/security/WhatsApp_Security_Encrypted_Backups_Whitepaper.pdf)** (2021+): End-to-End Encrypted Backups gate the backup key behind a user password and an HSM-based Backup Key Vault, and WhatsApp's own white paper *Security of End-to-End Encrypted Backups* (first published 10 September 2021) names the protocol: "At the heart of the key K registration and an ability to later securely retrieve K is the OPAQUE protocol." Key retrieval is "an OPAQUE login operation". This is a confirmed, documented OPAQUE deployment. (Meta's [launch engineering post](https://engineering.fb.com/2021/09/10/security/whatsapp-e2ee-backups/) describes the design without naming OPAQUE; the white paper it points to does.)
 - **[Cloudflare](https://blog.cloudflare.com/opaque-oblivious-passwords/)**: Published OPAQUE research and a public proof-of-concept demo. It is not evidence of a shipped production login path.
 - **[Apple Private Cloud Compute](https://security.apple.com/documentation/private-cloud-compute/nontargetability)**: A neighbour rather than an example — PCC authorizes requests with single-use RSA Blind Signatures, not an OPRF.
 - **[1Password](https://1password.com/files/1Password-White-Paper.pdf)**: An
@@ -59,6 +59,8 @@ The demo simulates both client and server in one browser. It opens with a clicka
   design uses SRP for password-and-Secret-Key account authentication, and it
   [documents CPace](https://1password.com/blog/unlock-sso-deep-dive) for an SSO
   device-enrollment flow.
+
+**Standards reviewed 15 November 2026:** the WhatsApp entry above was corrected from "adjacent rather than a confirmed deployment" to a confirmed deployment after reading WhatsApp's white paper directly rather than Meta's engineering post. Version 1 (10 September 2021, [archived copy](https://web.archive.org/web/20211006120849id_/https://www.whatsapp.com/security/WhatsApp_Security_Encrypted_Backups_Whitepaper.pdf)) and Version 3 (updated 8 October 2026, the link above) both name OPAQUE for Backup Key Vault registration and key retrieval; Version 3's resources list cites RFC 9807 and Meta's open-source `opaque-ke` library.
 
 ## How to Run Locally
 
