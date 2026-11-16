@@ -285,8 +285,11 @@ export function deriveOprfKeyPair(seed: Uint8Array): {
 
 /**
  * Diffie-Hellman: scalar * peer_point, serialized as a 33-byte compressed
- * SEC1 point per RFC 9807 §6.4 "Group elements are serialized using SEC1
- * compressed encoding".
+ * SEC1 point. RFC 9807 §6.4.1.2 says the P-256 DiffieHellman output "is then
+ * encoded using the SerializeElement function of the OPRF group described in
+ * Section 2.1 of [RFC9497]", and for OPRF(P-256, SHA-256) RFC 9497 §4.3 makes
+ * that "the compressed Elliptic-Curve-Point-to-Octet-String method according
+ * to [SEC1]; Ne = 33".
  */
 export function dh(scalar: Uint8Array, peerPoint: Uint8Array): Uint8Array {
   assertP256SecretKey('DH scalar', scalar);

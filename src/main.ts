@@ -818,7 +818,7 @@ function createExhibit2(): HTMLElement {
        the request, not a computational assumption. Obliviousness of the <em>output</em>
        (that the client learns nothing but <code>F(k, pwd)</code> and the server learns
        nothing at all) rests on the one-more-DH / 2HashDH assumption. The final
-       <code>oprf_output = Hash(pwd || I2OSP(len(N),2) || N || "Finalize")</code> with
+       <code>oprf_output = Hash(I2OSP(len(pwd),2) || pwd || I2OSP(len(N),2) || N || "Finalize")</code> with
        <code>N = r⁻¹·evaluated</code> re-binds the password into the hash so a malicious
        server swapping <code>evaluated</code> can't make two distinct passwords collide.</p>`,
       'primer'

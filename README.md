@@ -107,7 +107,8 @@ The server sees only _blinded_ values. The client computes the raw OPRF output, 
 **Implementation**: real RFC 9497 OPRF on NIST P-256 with hash-to-curve
 (SSWU map), via `@noble/curves`. The blind, evaluate, and unblind steps
 use scalar multiplication on the curve — not HKDF stand-ins. The final
-`oprf_output` is `Hash(input || N || "Finalize")` where `N = r⁻¹·evaluated`.
+`oprf_output` is `Hash(I2OSP(len(input),2) || input || I2OSP(len(N),2) || N || "Finalize")`
+where `N = r⁻¹·evaluated` (RFC 9497 §3.3.1).
 
 ### Component 2: Credential Envelope (RFC 9807 §4, internal mode)
 
