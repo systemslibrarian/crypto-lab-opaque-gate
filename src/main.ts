@@ -651,7 +651,7 @@ function createExhibit2(): HTMLElement {
   const intro = document.createElement('p');
   intro.innerHTML = `
     Watch the defining property of an OPRF: <strong>every run puts a different
-    value on the wire, but you always recover the same secret.</strong> The server
+    blinded value on the wire, while the same password and server key yield the same output.</strong> The server
     gets fresh noise each time (so it cannot link the two requests by their blinded
     values); the client always lands on the same
     <span class="tag tag-rwd">oprf_output</span>. Resistance to pre-compromise password
@@ -672,7 +672,7 @@ function createExhibit2(): HTMLElement {
     <span><span class="tag tag-wire">Blind</span> = what crosses the wire (changes every run)</span>
     &nbsp;&nbsp;
     <span class="swatch swatch-rwd" aria-hidden="true"></span>
-    <span><span class="tag tag-rwd">oprf_output</span> = the recovered value (stays identical)</span>
+    <span><span class="tag tag-rwd">oprf_output</span> = the client output (stable for the same password and server key)</span>
   `;
   exhibit.appendChild(legend);
 
@@ -686,18 +686,36 @@ function createExhibit2(): HTMLElement {
   let firstRwd: Uint8Array | null = null;
   let prevBlind: Uint8Array | null = null;
   let runCount = 0;
+  let comparisonVersion = 0;
 
   const status = createStatusRegion('oprf-status');
   exhibit.appendChild(status);
 
+  const clearComparison = (message: string) => {
+    comparisonVersion++;
+    firstRwd = null;
+    prevBlind = null;
+    runCount = 0;
+    runsWrap.replaceChildren();
+    status.textContent = message;
+  };
+  pwdInput.addEventListener('input', () => clearComparison('Password edited. Run the OPRF to start a new comparison.'));
+
   const runOnce = async () => {
-    const pwd = pwdInput.value || 'library2026';
+    const version = comparisonVersion;
+    const pwd = pwdInput.value;
+    if (!pwd) {
+      status.textContent = 'Enter a password to start a comparison.';
+      return;
+    }
 
     // Real RFC 9497 OPRF: fresh random blinding factor r each call.
     const { blind, blindingFactor } = await oprfClientBlind(pwd);
     const evaluated = await oprfServerEvaluate(serverKey.oprfPrivate, blind);
     const rwd = await oprfClientUnblind(pwd, evaluated, blindingFactor);
 
+    // An edit or reset can arrive while the cryptographic operation is pending.
+    if (version !== comparisonVersion) return;
     runCount += 1;
 
     const changedMask = prevBlind
@@ -779,13 +797,7 @@ function createExhibit2(): HTMLElement {
 
   const runBtn = createButton('Run OPRF', () => runOnce());
   const againBtn = createButton('Run again (fresh r)', () => runOnce());
-  const resetBtn = createButton('Reset', () => {
-    firstRwd = null;
-    prevBlind = null;
-    runCount = 0;
-    runsWrap.replaceChildren();
-    status.textContent = '';
-  });
+  const resetBtn = createButton('Reset', () => clearComparison(''));
   resetBtn.classList.add('btn-secondary');
 
   const btnRow = document.createElement('div');
@@ -1306,8 +1318,8 @@ function createExhibit3(): HTMLElement {
 
   const regIntro = document.createElement('p');
   regIntro.innerHTML =
-    'Register once. The client derives everything from the password locally and hands the ' +
-    'server only a public key, a masking key, and an envelope — <strong>no password, no hash</strong>.';
+    'After the server evaluates the blinded request, the client uploads its public key, masking key, and envelope. ' +
+    'The password stays on the client. See <a href="https://www.rfc-editor.org/rfc/rfc9807.html#section-5.1">RFC 9807 §5.1</a>.';
   regPanel.appendChild(regIntro);
 
   const { wrap: regUserWrap, input: regUsername } = createLabeledInput('Username', 'alice');
@@ -1338,22 +1350,23 @@ function createExhibit3(): HTMLElement {
 
     const result = createStatusRegion('reg-result');
     const done = document.createElement('div');
+    const uploadBytes = record.clientPublicKey.length + record.maskingKey.length + record.envelope.length;
     done.innerHTML = `<strong class="status-success"><span aria-hidden="true">✓</span>
-      Registered — the server now holds this record for "${escapeHtml(record.credentialIdentifier)}":</strong>`;
+      Registered — the client uploaded ${uploadBytes} bytes to the server for "${escapeHtml(record.credentialIdentifier)}".</strong>`;
     result.appendChild(done);
     result.appendChild(
-      createByteGrid('client_public_key (→ server)', record.clientPublicKey, { variant: 'wire' })
+      createByteGrid('client_public_key (client → server)', record.clientPublicKey, { variant: 'wire' })
     );
     result.appendChild(
-      createByteGrid('masking_key (server only)', record.maskingKey, {
-        variant: 'neutral',
-        labelHtml: termHtml('masking_key') + ' <span class="grid-hint">(server only)</span>'
+      createByteGrid('masking_key (client → server)', record.maskingKey, {
+        variant: 'wire',
+        labelHtml: termHtml('masking_key') + ' <span class="grid-hint">(client → server)</span>'
       })
     );
     result.appendChild(
-      createByteGrid('envelope (server only)', record.envelope, {
-        variant: 'neutral',
-        labelHtml: termHtml('envelope') + ' <span class="grid-hint">(server only)</span>',
+      createByteGrid('envelope (client → server)', record.envelope, {
+        variant: 'wire',
+        labelHtml: termHtml('envelope') + ' <span class="grid-hint">(client → server)</span>',
         note: 'nonce || HMAC(auth_key, nonce || cleartext_creds) — no password inside'
       })
     );
