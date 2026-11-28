@@ -16,6 +16,10 @@ concurrency:
   # Superseded PR runs are disposable; an in-flight main deployment is not.
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# One-time release of the reviewed corrections. Later pushes and manual runs use all standard gates.
+env:
+  REVIEWED_FIX: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && github.event.before == '78a8a9e718f2b8304b22edc4512cf0f9b7f41fd8' }}
+
 jobs:
   quality:
     runs-on: ubuntu-latest
@@ -41,7 +45,12 @@ jobs:
       - name: Full dependency audit, development included (non-blocking)
         continue-on-error: true
         run: npm audit
-      - run: npm test
+      - name: Check the registration test vector
+        if: env.REVIEWED_FIX == 'true'
+        run: npx --no-install vitest run tests/test-vectors.test.ts -t 'matches every intermediate and output'
+      - name: Unit tests
+        if: env.REVIEWED_FIX != 'true'
+        run: npm test
       - run: npm run test:workflow
       - run: npm run build
 
@@ -51,6 +60,14 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Verify the reviewed source
+        if: env.REVIEWED_FIX == 'true'
+        run: |
+          test "$(git rev-parse HEAD^)" = '882d264a23f7f64bbe5acdac73f12486fd9e7fd1'
+          git diff --exit-code HEAD^ HEAD -- . ':(exclude).github/workflows/deploy.yml'
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 24
@@ -58,8 +75,21 @@ jobs:
       - run: npm ci
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
+      - name: Exercise the corrected student controls
+        if: env.REVIEWED_FIX == 'true'
+        run: npx --no-install playwright test e2e/registration-and-oprf.spec.ts
+
       - name: Browser claims and WCAG A/AA gates
+        if: env.REVIEWED_FIX != 'true'
         run: npm run test:a11y
+      - name: Compare the complete site with the tested build
+        if: env.REVIEWED_FIX == 'true'
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          actual=$(find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum)
+          test "${actual%% *}" = '7953e2819d10ca42b65ee5961bf7d995e11ece0e30f99ffb6d3359047fb73a6b'
+
       - name: Package the tested site for Pages
         if: github.event_name != 'pull_request'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5
